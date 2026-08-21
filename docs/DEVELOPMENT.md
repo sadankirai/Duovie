@@ -28,3 +28,5 @@ When running the API locally, provide its required database connection string th
 export ConnectionStrings__DefaultConnection='Host=127.0.0.1;Port=5433;Database=duovie;Username=duovie;Password=<your-local-password>'
 dotnet run --project backend/src/Duovie.Api
 ```
+
+The API exposes `GET /health/live` for process liveness and `GET /health/ready` for database readiness. Liveness does not require PostgreSQL; readiness reports unhealthy when the configured database cannot be reached.
