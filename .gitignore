@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# .NET build output
+[Bb]in/
+[Oo]bj/
+[Tt]est[Rr]esult*/
+
+# Node.js build output
+node_modules/
+dist/
+
+# Local environment files (keep intentional examples)
+.env
+.env.*
+!.env.example
+
+# IDE and editor artifacts
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Logs and local caches
+*.log
+.cache/
