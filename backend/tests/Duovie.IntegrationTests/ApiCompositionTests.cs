@@ -1,3 +1,8 @@
+using Duovie.Infrastructure;
+using Duovie.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using System.Xml.Linq;
 
 namespace Duovie.IntegrationTests;
@@ -13,6 +18,38 @@ public class ApiCompositionTests
         Assert.Contains(references, reference => reference.Contains("Duovie.Application.csproj", StringComparison.Ordinal));
         Assert.Contains(references, reference => reference.Contains("Duovie.Infrastructure.csproj", StringComparison.Ordinal));
         Assert.DoesNotContain(references, reference => reference.Contains("Duovie.Domain.csproj", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Infrastructure_requires_the_default_connection_string()
+    {
+        var services = new ServiceCollection();
+        var configuration = new ConfigurationBuilder().Build();
+
+        var exception = Assert.Throws<InvalidOperationException>(() => services.AddInfrastructure(configuration));
+
+        Assert.Equal("Connection string 'DefaultConnection' is required.", exception.Message);
+    }
+
+    [Fact]
+    public void Infrastructure_registers_DuovieDbContext_with_the_PostgreSQL_provider()
+    {
+        var services = new ServiceCollection();
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:DefaultConnection"] = "Host=127.0.0.1;Port=5433;Database=duovie;Username=duovie",
+                })
+            .Build();
+
+        services.AddInfrastructure(configuration);
+
+        using var serviceProvider = services.BuildServiceProvider();
+        using var scope = serviceProvider.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<DuovieDbContext>();
+
+        Assert.Equal("Npgsql.EntityFrameworkCore.PostgreSQL", dbContext.Database.ProviderName);
     }
 
     private static IReadOnlyList<string> GetProjectReferences(string relativeProjectPath)

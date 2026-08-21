@@ -21,3 +21,10 @@ docker compose ps
 ```
 
 Check startup output with `docker compose logs --no-color postgres`, then stop the local service with `docker compose down`. Its named Docker volume preserves data between normal stops. To intentionally reset local database data, run `docker compose down --volumes`; this permanently deletes the local PostgreSQL data volume.
+
+When running the API locally, provide its required database connection string through the standard configuration key. Do not commit this value:
+
+```sh
+export ConnectionStrings__DefaultConnection='Host=127.0.0.1;Port=5433;Database=duovie;Username=duovie;Password=<your-local-password>'
+dotnet run --project backend/src/Duovie.Api
+```
