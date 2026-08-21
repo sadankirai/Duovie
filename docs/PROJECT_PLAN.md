@@ -4,6 +4,8 @@ This roadmap distinguishes the MVP from future work. Each stage requires validat
 
 ## Stage 0 — Repository & AI Foundation
 
+**Status:** Foundation verification completed (Task 0.2D).
+
 **Objective:** establish a reproducible, governed starting point.  
 **Scope:** project documentation, AI guidance, repository conventions, then later backend/frontend scaffolds, test projects, and Docker development foundation.  
 **Non-goal:** application features.  
