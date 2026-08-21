@@ -12,7 +12,7 @@
 
 ## Local PostgreSQL
 
-Docker Compose provides the local PostgreSQL runtime; it is not connected to the application until Stage 1. Copy the safe development template and start the service:
+Docker Compose provides the local PostgreSQL runtime. The API connects to it when `ConnectionStrings:DefaultConnection` is provided. Copy the safe development template and start the service:
 
 ```sh
 cp .env.example .env

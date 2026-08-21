@@ -19,7 +19,7 @@ public class HealthEndpointTests(DuovieApiFactory factory) : IClassFixture<Duovi
     }
 
     [Fact]
-    public async Task Readiness_is_unhealthy_when_the_database_is_unreachable()
+    public async Task Readiness_is_unhealthy_without_exposing_database_details_when_the_database_is_unreachable()
     {
         using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
         {
@@ -29,5 +29,6 @@ public class HealthEndpointTests(DuovieApiFactory factory) : IClassFixture<Duovi
         var response = await client.GetAsync("/health/ready");
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal("Unhealthy", await response.Content.ReadAsStringAsync());
     }
 }

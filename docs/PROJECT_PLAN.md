@@ -16,6 +16,8 @@ Task 0.1 is documentation only. It does not create applications, packages, Docke
 
 ## Stage 1 — Backend Foundation
 
+**Status:** Backend foundation verification completed (Task 1.3).
+
 **Objective:** establish the layered backend runtime.  
 **Scope:** DI, EF Core, PostgreSQL, configuration, error handling, and health checks.  
 **Non-goal:** room/realtime/media features.  
