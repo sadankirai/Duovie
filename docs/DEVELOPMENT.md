@@ -9,3 +9,15 @@
 - Add or update relevant tests with behavior changes. Run relevant formatting, lint, build, and test checks before completion; do not report checks as passed unless run.
 - Review migrations before accepting them when persistence work begins.
 - New dependencies need a clear justification; architectural changes require explicit approval and an ADR update/new ADR as appropriate.
+
+## Local PostgreSQL
+
+Docker Compose provides the local PostgreSQL runtime; it is not connected to the application until Stage 1. Copy the safe development template and start the service:
+
+```sh
+cp .env.example .env
+docker compose up -d
+docker compose ps
+```
+
+Check startup output with `docker compose logs --no-color postgres`, then stop the local service with `docker compose down`. Its named Docker volume preserves data between normal stops. To intentionally reset local database data, run `docker compose down --volumes`; this permanently deletes the local PostgreSQL data volume.

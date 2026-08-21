@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:18
+    container_name: duovie-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DUOVIE_POSTGRES_DB}
+      POSTGRES_USER: ${DUOVIE_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${DUOVIE_POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:${DUOVIE_POSTGRES_PORT}:5432"
+    volumes:
+      - duovie-postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  duovie-postgres-data:
