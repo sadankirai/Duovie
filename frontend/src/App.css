@@ -1,0 +1,12 @@
+.app-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 2rem;
+  text-align: center;
+}
+
+.development-status {
+  margin-top: 1rem;
+  color: #5f6368;
+}
