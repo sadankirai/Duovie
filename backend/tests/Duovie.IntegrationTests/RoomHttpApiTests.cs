@@ -59,6 +59,7 @@ public sealed class RoomHttpApiTests : IDisposable
         Assert.NotEqual(payload.RoomId, payload.ParticipantId);
         Assert.Equal("Host", payload.Role);
         Assert.False(string.IsNullOrWhiteSpace(payload.Credential));
+        Assert.NotEqual("client-controlled", payload.Credential);
         Assert.Equal(PostgreSqlDuovieApiFactory.UtcNow.Add(SessionLifetime), payload.SessionExpiresAtUtc);
         Assert.False(payload.RawJson.Contains("tokenHash", StringComparison.OrdinalIgnoreCase));
         Assert.False(payload.RawJson.Contains("sessionId", StringComparison.OrdinalIgnoreCase));
@@ -97,6 +98,7 @@ public sealed class RoomHttpApiTests : IDisposable
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         AssertCacheControlNoStore(response);
+        Assert.Null(response.Headers.Location);
         Assert.Equal(created.RoomId, joined.RoomId);
         Assert.Equal("Ready", joined.RoomStatus);
         Assert.Equal(created.RoomExpiresAtUtc, joined.RoomExpiresAtUtc);
@@ -105,6 +107,7 @@ public sealed class RoomHttpApiTests : IDisposable
         Assert.NotEqual(created.ParticipantId, joined.ParticipantId);
         Assert.Equal("Guest", joined.Role);
         Assert.False(string.IsNullOrWhiteSpace(joined.Credential));
+        Assert.NotEqual("client-controlled", joined.Credential);
         Assert.NotEqual(CredentialFingerprint(created.Credential), CredentialFingerprint(joined.Credential));
         Assert.False(joined.RawJson.Contains("hostId", StringComparison.OrdinalIgnoreCase));
         Assert.False(joined.RawJson.Contains("tokenHash", StringComparison.OrdinalIgnoreCase));
@@ -186,6 +189,17 @@ public sealed class RoomHttpApiTests : IDisposable
     }
 
     [Fact]
+    public async Task Empty_Room_identifier_is_safely_treated_as_a_missing_Room()
+    {
+        using var response = await _client.PostAsync($"/api/rooms/{Guid.Empty}/join", null);
+
+        await AssertSafeProblemAsync(
+            response,
+            HttpStatusCode.NotFound,
+            "Room not found.");
+    }
+
+    [Fact]
     public async Task Malformed_Room_identifier_returns_validation_problem_details()
     {
         using var response = await _client.PostAsync("/api/rooms/not-a-guid/join", null);
@@ -247,6 +261,51 @@ public sealed class RoomHttpApiTests : IDisposable
                 response.Dispose();
             }
         }
+    }
+
+    [Fact]
+    public async Task Unexpected_Room_repository_failure_during_join_returns_safe_500_and_rolls_back()
+    {
+        var created = await CreateRoomAsync(_client);
+        using var factory = new PostgreSqlDuovieApiFactory(
+            _fixture.ConnectionString,
+            failRoomSave: true);
+        using var client = CreateClient(factory);
+
+        using var response = await client.PostAsync($"/api/rooms/{created.RoomId}/join", null);
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+        Assert.False(body.Contains("Simulated Room persistence failure", StringComparison.Ordinal));
+        Assert.False(body.Contains(created.Credential, StringComparison.Ordinal));
+        Assert.False(body.Contains("tokenHash", StringComparison.OrdinalIgnoreCase));
+        Assert.False(body.Contains("stackTrace", StringComparison.OrdinalIgnoreCase));
+
+        await using var dbContext = _fixture.CreateDbContext();
+        var room = await dbContext.Rooms.AsNoTracking().SingleAsync(candidate => candidate.Id == created.RoomId);
+        var sessions = await dbContext.ParticipantSessions
+            .AsNoTracking()
+            .Where(session => session.RoomId == created.RoomId)
+            .ToListAsync();
+
+        Assert.Null(room.GuestId);
+        Assert.Equal(RoomStatus.WaitingForGuest, room.Status);
+        Assert.Single(sessions);
+        Assert.Equal(ParticipantRole.Host, sessions[0].Role);
+    }
+
+    [Fact]
+    public async Task Unsupported_Room_operations_are_not_routable()
+    {
+        var roomId = Guid.NewGuid();
+        using var getResponse = await _client.GetAsync($"/api/rooms/{roomId}");
+        using var deleteResponse = await _client.DeleteAsync($"/api/rooms/{roomId}");
+        using var closeResponse = await _client.PostAsync($"/api/rooms/{roomId}/close", null);
+
+        Assert.Equal(HttpStatusCode.NotFound, getResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, deleteResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, closeResponse.StatusCode);
     }
 
     public void Dispose()

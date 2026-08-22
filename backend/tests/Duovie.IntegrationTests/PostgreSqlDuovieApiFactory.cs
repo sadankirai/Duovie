@@ -17,15 +17,18 @@ public sealed class PostgreSqlDuovieApiFactory : WebApplicationFactory<Program>
     private const string RoomLifetime = "02:00:00";
     private readonly string _connectionString;
     private readonly TwoRoomLoadCoordinator? _roomLoadCoordinator;
+    private readonly bool _failRoomSave;
 
     public PostgreSqlDuovieApiFactory(
         string connectionString,
-        bool coordinateTwoRoomLoads = false)
+        bool coordinateTwoRoomLoads = false,
+        bool failRoomSave = false)
     {
         _connectionString = connectionString;
         _roomLoadCoordinator = coordinateTwoRoomLoads
             ? new TwoRoomLoadCoordinator()
             : null;
+        _failRoomSave = failRoomSave;
     }
 
     public static DateTimeOffset UtcNow { get; } =
@@ -56,13 +59,25 @@ public sealed class PostgreSqlDuovieApiFactory : WebApplicationFactory<Program>
             services.RemoveAll<TimeProvider>();
             services.AddSingleton<TimeProvider>(new FixedTimeProvider(UtcNow));
 
-            if (_roomLoadCoordinator is not null)
+            if (_roomLoadCoordinator is not null || _failRoomSave)
             {
                 services.RemoveAll<IRoomRepository>();
                 services.AddScoped<IRoomRepository>(serviceProvider =>
-                    new CoordinatedRoomRepository(
-                        new RoomRepository(serviceProvider.GetRequiredService<DuovieDbContext>()),
-                        _roomLoadCoordinator));
+                {
+                    IRoomRepository repository = new RoomRepository(
+                        serviceProvider.GetRequiredService<DuovieDbContext>());
+
+                    if (_roomLoadCoordinator is not null)
+                    {
+                        repository = new CoordinatedRoomRepository(
+                            repository,
+                            _roomLoadCoordinator);
+                    }
+
+                    return _failRoomSave
+                        ? new SaveFailingRoomRepository(repository)
+                        : repository;
+                });
             }
         });
     }
@@ -114,6 +129,26 @@ public sealed class PostgreSqlDuovieApiFactory : WebApplicationFactory<Program>
         public Task SaveChangesAsync(CancellationToken cancellationToken = default)
         {
             return inner.SaveChangesAsync(cancellationToken);
+        }
+    }
+
+    private sealed class SaveFailingRoomRepository(IRoomRepository inner) : IRoomRepository
+    {
+        public Task<Room?> GetByIdAsync(
+            Guid roomId,
+            CancellationToken cancellationToken = default)
+        {
+            return inner.GetByIdAsync(roomId, cancellationToken);
+        }
+
+        public Task AddAsync(Room room, CancellationToken cancellationToken = default)
+        {
+            return inner.AddAsync(room, cancellationToken);
+        }
+
+        public Task SaveChangesAsync(CancellationToken cancellationToken = default)
+        {
+            throw new InvalidOperationException("Simulated Room persistence failure.");
         }
     }
 }
