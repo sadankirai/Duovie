@@ -9,6 +9,8 @@
 
 Important future cases include rejection of a third participant; blocked Guest Host-only actions; incorrect joins to expired/closed rooms; invalid participant sessions; and protection against anonymous TURN-credential abuse when authorization is required.
 
+Room persistence integration tests use Testcontainers with an isolated PostgreSQL 18 container. Docker must be running for `dotnet test backend/Duovie.sln`; the tests do not use `.env`, developer database credentials, or existing local database state.
+
 ## WebRTC validation
 
 WebRTC cannot be trusted through unit tests alone. Browser and network combinations are not automated yet. Later real-browser validation should cover Chrome ↔ Chrome, Chrome ↔ Edge, Edge ↔ Chrome, Safari ↔ Chrome, Chrome ↔ Safari, and Safari ↔ Safari; same and different networks, hotspots, forced TURN, interruption/recovery, and long sessions.

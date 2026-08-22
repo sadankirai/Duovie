@@ -1,5 +1,7 @@
+using Duovie.Application.Rooms;
 using Duovie.Infrastructure;
 using Duovie.Infrastructure.Persistence;
+using Duovie.Infrastructure.Persistence.Repositories;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -50,6 +52,27 @@ public class ApiCompositionTests
         var dbContext = scope.ServiceProvider.GetRequiredService<DuovieDbContext>();
 
         Assert.Equal("Npgsql.EntityFrameworkCore.PostgreSQL", dbContext.Database.ProviderName);
+    }
+
+    [Fact]
+    public void Infrastructure_registers_the_Room_repository()
+    {
+        var services = new ServiceCollection();
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:DefaultConnection"] = "Host=127.0.0.1;Port=5433;Database=duovie;Username=duovie",
+                })
+            .Build();
+
+        services.AddInfrastructure(configuration);
+
+        using var serviceProvider = services.BuildServiceProvider();
+        using var scope = serviceProvider.CreateScope();
+        var repository = scope.ServiceProvider.GetRequiredService<IRoomRepository>();
+
+        Assert.IsType<RoomRepository>(repository);
     }
 
     private static IReadOnlyList<string> GetProjectReferences(string relativeProjectPath)

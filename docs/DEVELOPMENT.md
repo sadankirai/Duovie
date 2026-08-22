@@ -30,3 +30,15 @@ dotnet run --project backend/src/Duovie.Api
 ```
 
 The API exposes `GET /health/live` for process liveness and `GET /health/ready` for database readiness. Liveness does not require PostgreSQL; readiness reports unhealthy when the configured database cannot be reached.
+
+## Database migrations
+
+Restore the repository-pinned EF Core tool before creating or applying migrations:
+
+```sh
+dotnet tool restore
+dotnet ef migrations add <MigrationName> --project backend/src/Duovie.Infrastructure --startup-project backend/src/Duovie.Api --output-dir Persistence/Migrations
+dotnet ef database update --project backend/src/Duovie.Infrastructure --startup-project backend/src/Duovie.Api
+```
+
+The commands use `ConnectionStrings__DefaultConnection` from the current environment. Migrations are applied explicitly; the API does not migrate the database automatically at startup.

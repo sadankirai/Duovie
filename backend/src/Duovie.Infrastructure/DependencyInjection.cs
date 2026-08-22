@@ -1,4 +1,6 @@
+using Duovie.Application.Rooms;
 using Duovie.Infrastructure.Persistence;
+using Duovie.Infrastructure.Persistence.Repositories;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -17,6 +19,7 @@ public static class DependencyInjection
         }
 
         services.AddDbContext<DuovieDbContext>(options => options.UseNpgsql(connectionString));
+        services.AddScoped<IRoomRepository, RoomRepository>();
 
         return services;
     }
