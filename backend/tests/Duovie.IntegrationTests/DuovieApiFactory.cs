@@ -11,10 +11,13 @@ namespace Duovie.IntegrationTests;
 public sealed class DuovieApiFactory : WebApplicationFactory<Program>
 {
     private const string UnreachableConnectionString = "Host=127.0.0.1;Port=1;Database=duovie;Username=duovie;Timeout=1;Command Timeout=1";
+    private const string SessionLifetime = "00:30:00";
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
+        builder.UseSetting("ConnectionStrings:DefaultConnection", UnreachableConnectionString);
+        builder.UseSetting("ParticipantSessions:Lifetime", SessionLifetime);
         builder.ConfigureAppConfiguration((_, configuration) =>
         {
             configuration.Sources.Clear();
@@ -22,6 +25,7 @@ public sealed class DuovieApiFactory : WebApplicationFactory<Program>
                 new Dictionary<string, string?>
                 {
                     ["ConnectionStrings:DefaultConnection"] = UnreachableConnectionString,
+                    ["ParticipantSessions:Lifetime"] = SessionLifetime,
                 });
         });
         builder.ConfigureServices(services =>

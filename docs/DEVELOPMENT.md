@@ -22,10 +22,11 @@ docker compose ps
 
 Check startup output with `docker compose logs --no-color postgres`, then stop the local service with `docker compose down`. Its named Docker volume preserves data between normal stops. To intentionally reset local database data, run `docker compose down --volumes`; this permanently deletes the local PostgreSQL data volume.
 
-When running the API locally, provide its required database connection string through the standard configuration key. Do not commit this value:
+When running the API locally, provide its required database connection string and participant-session lifetime through the standard configuration keys. The lifetime is a positive .NET `TimeSpan`; its deployment value is an explicit operational policy rather than an application default. Do not commit the database credential:
 
 ```sh
 export ConnectionStrings__DefaultConnection='Host=127.0.0.1;Port=5433;Database=duovie;Username=duovie;Password=<your-local-password>'
+export ParticipantSessions__Lifetime='<positive-TimeSpan>'
 dotnet run --project backend/src/Duovie.Api
 ```
 
@@ -41,4 +42,4 @@ dotnet ef migrations add <MigrationName> --project backend/src/Duovie.Infrastruc
 dotnet ef database update --project backend/src/Duovie.Infrastructure --startup-project backend/src/Duovie.Api
 ```
 
-The commands use `ConnectionStrings__DefaultConnection` from the current environment. Migrations are applied explicitly; the API does not migrate the database automatically at startup.
+EF Core tooling uses an Infrastructure-only design-time context factory, so `migrations add` and `migrations has-pending-model-changes` need no application configuration and do not connect to a database. `database update` uses `ConnectionStrings__DefaultConnection` when it is supplied; it does not require `ParticipantSessions__Lifetime`. Migrations are applied explicitly; the API does not migrate the database automatically at startup.

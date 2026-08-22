@@ -1,3 +1,4 @@
+using Duovie.Application.ParticipantSessions;
 using Duovie.Application.Rooms;
 using Duovie.Infrastructure;
 using Duovie.Infrastructure.Persistence;
@@ -11,6 +12,9 @@ namespace Duovie.IntegrationTests;
 
 public class ApiCompositionTests
 {
+    private const string ConnectionString = "Host=127.0.0.1;Port=5433;Database=duovie;Username=duovie";
+    private const string SessionLifetime = "00:30:00";
+
     [Fact]
     public void Api_references_the_Application_and_Infrastructure_layers()
     {
@@ -41,7 +45,8 @@ public class ApiCompositionTests
             .AddInMemoryCollection(
                 new Dictionary<string, string?>
                 {
-                    ["ConnectionStrings:DefaultConnection"] = "Host=127.0.0.1;Port=5433;Database=duovie;Username=duovie",
+                    ["ConnectionStrings:DefaultConnection"] = ConnectionString,
+                    ["ParticipantSessions:Lifetime"] = SessionLifetime,
                 })
             .Build();
 
@@ -55,14 +60,15 @@ public class ApiCompositionTests
     }
 
     [Fact]
-    public void Infrastructure_registers_the_Room_repository()
+    public void Infrastructure_registers_room_and_participant_session_services()
     {
         var services = new ServiceCollection();
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(
                 new Dictionary<string, string?>
                 {
-                    ["ConnectionStrings:DefaultConnection"] = "Host=127.0.0.1;Port=5433;Database=duovie;Username=duovie",
+                    ["ConnectionStrings:DefaultConnection"] = ConnectionString,
+                    ["ParticipantSessions:Lifetime"] = SessionLifetime,
                 })
             .Build();
 
@@ -73,6 +79,38 @@ public class ApiCompositionTests
         var repository = scope.ServiceProvider.GetRequiredService<IRoomRepository>();
 
         Assert.IsType<RoomRepository>(repository);
+        Assert.IsType<ParticipantSessionStore>(
+            scope.ServiceProvider.GetRequiredService<IParticipantSessionStore>());
+        Assert.IsType<RoomSessionTransaction>(
+            scope.ServiceProvider.GetRequiredService<IRoomSessionTransaction>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<ParticipantSessionService>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<ParticipantSessionAuthorizer>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<CreateRoomSession>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<JoinRoomSession>());
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("00:00:00")]
+    [InlineData("not-a-duration")]
+    public void Infrastructure_requires_a_positive_participant_session_lifetime(string? lifetime)
+    {
+        var services = new ServiceCollection();
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:DefaultConnection"] = ConnectionString,
+                    ["ParticipantSessions:Lifetime"] = lifetime,
+                })
+            .Build();
+
+        var exception = Assert.Throws<InvalidOperationException>(() => services.AddInfrastructure(configuration));
+
+        Assert.Equal(
+            "Configuration value 'ParticipantSessions:Lifetime' must be a positive TimeSpan.",
+            exception.Message);
     }
 
     private static IReadOnlyList<string> GetProjectReferences(string relativeProjectPath)
