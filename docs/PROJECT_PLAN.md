@@ -26,6 +26,8 @@ Task 0.1 is documentation only. It does not create applications, packages, Docke
 
 ## Stage 2 — Room System
 
+**Status:** Room system verification completed (Task 2.6).
+
 **Objective:** implement private two-person room access.  
 **Scope:** create/join/close rooms, Host/Guest sessions, server-side capacity, lifecycle, expiration/closing rules.  
 **Non-goal:** media sharing.  
