@@ -11,6 +11,8 @@ internal sealed class RoomRepositorySpy : IRoomRepository
 
     public int SaveChangesCallCount { get; private set; }
 
+    public Exception? SaveChangesException { get; set; }
+
     public Task<Room?> GetByIdAsync(Guid roomId, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -32,6 +34,11 @@ internal sealed class RoomRepositorySpy : IRoomRepository
     {
         cancellationToken.ThrowIfCancellationRequested();
         SaveChangesCallCount++;
+
+        if (SaveChangesException is not null)
+        {
+            throw SaveChangesException;
+        }
 
         return Task.CompletedTask;
     }

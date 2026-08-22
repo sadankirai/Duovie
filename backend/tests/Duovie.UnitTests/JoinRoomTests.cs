@@ -41,61 +41,81 @@ public class JoinRoomTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_propagates_second_Guest_rejection()
+    public async Task ExecuteAsync_translates_second_Guest_rejection_to_a_Room_join_rejection()
     {
         var room = CreateRoom();
         room.AddGuest(GuestId, CreatedAtUtc.AddMinutes(1));
         var repository = CreateRepository(room);
         var useCase = new JoinRoom(repository, new FixedTimeProvider(CreatedAtUtc.AddMinutes(2)));
 
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+        var exception = await Assert.ThrowsAsync<RoomJoinRejectedException>(
             () => useCase.ExecuteAsync(RoomId, SecondGuestId));
 
-        Assert.Equal("The room already has a Guest.", exception.Message);
+        var cause = Assert.IsType<InvalidOperationException>(exception.InnerException);
+        Assert.Equal("The room already has a Guest.", cause.Message);
         Assert.Equal(0, repository.SaveChangesCallCount);
     }
 
     [Fact]
-    public async Task ExecuteAsync_propagates_Host_as_Guest_rejection()
+    public async Task ExecuteAsync_translates_Host_as_Guest_rejection_to_a_Room_join_rejection()
     {
         var room = CreateRoom();
         var repository = CreateRepository(room);
         var useCase = new JoinRoom(repository, new FixedTimeProvider(CreatedAtUtc.AddMinutes(1)));
 
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+        var exception = await Assert.ThrowsAsync<RoomJoinRejectedException>(
             () => useCase.ExecuteAsync(RoomId, HostId));
 
-        Assert.Equal("The Host cannot join as the Guest.", exception.Message);
+        var cause = Assert.IsType<InvalidOperationException>(exception.InnerException);
+        Assert.Equal("The Host cannot join as the Guest.", cause.Message);
         Assert.Equal(0, repository.SaveChangesCallCount);
     }
 
     [Fact]
-    public async Task ExecuteAsync_propagates_expired_room_rejection()
+    public async Task ExecuteAsync_translates_expired_room_rejection_to_a_Room_join_rejection()
     {
         var room = CreateRoom();
         var repository = CreateRepository(room);
         var useCase = new JoinRoom(repository, new FixedTimeProvider(ExpiresAtUtc));
 
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+        var exception = await Assert.ThrowsAsync<RoomJoinRejectedException>(
             () => useCase.ExecuteAsync(RoomId, GuestId));
 
-        Assert.Equal("An expired room cannot accept a Guest.", exception.Message);
+        var cause = Assert.IsType<InvalidOperationException>(exception.InnerException);
+        Assert.Equal("An expired room cannot accept a Guest.", cause.Message);
         Assert.Equal(0, repository.SaveChangesCallCount);
     }
 
     [Fact]
-    public async Task ExecuteAsync_propagates_closed_room_rejection()
+    public async Task ExecuteAsync_translates_closed_room_rejection_to_a_Room_join_rejection()
     {
         var room = CreateRoom();
         room.Close(CreatedAtUtc.AddMinutes(1));
         var repository = CreateRepository(room);
         var useCase = new JoinRoom(repository, new FixedTimeProvider(CreatedAtUtc.AddMinutes(2)));
 
+        var exception = await Assert.ThrowsAsync<RoomJoinRejectedException>(
+            () => useCase.ExecuteAsync(RoomId, GuestId));
+
+        var cause = Assert.IsType<InvalidOperationException>(exception.InnerException);
+        Assert.Equal("A closed room cannot accept a Guest.", cause.Message);
+        Assert.Equal(0, repository.SaveChangesCallCount);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_does_not_translate_a_repository_SaveChanges_failure()
+    {
+        var room = CreateRoom();
+        var repository = CreateRepository(room);
+        repository.SaveChangesException = new InvalidOperationException("Persistence operation failed.");
+        var useCase = new JoinRoom(repository, new FixedTimeProvider(CreatedAtUtc.AddMinutes(1)));
+
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(
             () => useCase.ExecuteAsync(RoomId, GuestId));
 
-        Assert.Equal("A closed room cannot accept a Guest.", exception.Message);
-        Assert.Equal(0, repository.SaveChangesCallCount);
+        Assert.Equal("Persistence operation failed.", exception.Message);
+        Assert.IsNotType<RoomJoinRejectedException>(exception);
+        Assert.Equal(1, repository.SaveChangesCallCount);
     }
 
     private static Room CreateRoom()

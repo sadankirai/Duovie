@@ -22,15 +22,23 @@ docker compose ps
 
 Check startup output with `docker compose logs --no-color postgres`, then stop the local service with `docker compose down`. Its named Docker volume preserves data between normal stops. To intentionally reset local database data, run `docker compose down --volumes`; this permanently deletes the local PostgreSQL data volume.
 
-When running the API locally, provide its required database connection string and participant-session lifetime through the standard configuration keys. The lifetime is a positive .NET `TimeSpan`; its deployment value is an explicit operational policy rather than an application default. Do not commit the database credential:
+When running the API locally, provide its required database connection string, participant-session lifetime, and Room lifetime through the standard configuration keys. Both lifetimes are positive .NET `TimeSpan` values; their deployment values are explicit operational policies rather than application defaults. Do not commit the database credential:
 
 ```sh
 export ConnectionStrings__DefaultConnection='Host=127.0.0.1;Port=5433;Database=duovie;Username=duovie;Password=<your-local-password>'
 export ParticipantSessions__Lifetime='<positive-TimeSpan>'
+export Rooms__Lifetime='<positive-TimeSpan>'
 dotnet run --project backend/src/Duovie.Api
 ```
 
 The API exposes `GET /health/live` for process liveness and `GET /health/ready` for database readiness. Liveness does not require PostgreSQL; readiness reports unhealthy when the configured database cannot be reached.
+
+## Room HTTP API
+
+- `POST /api/rooms` creates a Room using the server-configured `Rooms:Lifetime` and returns the server-generated Host participant session.
+- `POST /api/rooms/{roomId}/join` joins an available Room and returns the server-generated Guest participant session.
+
+These endpoints accept no participant identity, role, or credential input. Successful responses include a bearer-style participant credential in the response body and use `Cache-Control: no-store`; clients must treat that credential as sensitive. A Room Id identifies the Room but grants no participant or Host authority. Room closure is not exposed because the canonical product rules do not yet define who may close a Room.
 
 ## Database migrations
 

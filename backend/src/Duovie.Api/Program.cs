@@ -1,3 +1,5 @@
+using Duovie.Api.Configuration;
+using Duovie.Api.Errors;
 using Duovie.Infrastructure;
 using Duovie.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
@@ -6,6 +8,13 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers();
 builder.Services.AddProblemDetails();
+builder.Services.AddExceptionHandler<RoomExceptionHandler>();
+builder.Services.AddOptions<RoomOptions>()
+    .Bind(builder.Configuration.GetSection(RoomOptions.ConfigurationSectionName))
+    .Validate(
+        options => options.Lifetime > TimeSpan.Zero,
+        $"Configuration value '{RoomOptions.LifetimeConfigurationKey}' must be a positive TimeSpan.")
+    .ValidateOnStart();
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddAuthorization();
 builder.Services.AddHealthChecks()

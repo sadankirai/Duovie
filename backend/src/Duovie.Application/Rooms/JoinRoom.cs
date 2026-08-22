@@ -18,7 +18,15 @@ public sealed class JoinRoom(IRoomRepository roomRepository, TimeProvider timePr
         var room = await _roomRepository.GetByIdAsync(roomId, cancellationToken)
             ?? throw new RoomNotFoundException(roomId);
 
-        room.AddGuest(guestId, _timeProvider.GetUtcNow());
+        try
+        {
+            room.AddGuest(guestId, _timeProvider.GetUtcNow());
+        }
+        catch (InvalidOperationException exception)
+        {
+            throw new RoomJoinRejectedException(exception);
+        }
+
         await _roomRepository.SaveChangesAsync(cancellationToken);
 
         return room;

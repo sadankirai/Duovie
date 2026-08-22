@@ -18,6 +18,8 @@ public sealed class PostgreSqlFixture : IAsyncLifetime
         .WithPassword($"duovie_{Guid.NewGuid():N}")
         .Build();
 
+    public string ConnectionString => _container.GetConnectionString();
+
     public DuovieDbContext CreateDbContext()
     {
         var options = new DbContextOptionsBuilder<DuovieDbContext>()
