@@ -14,3 +14,13 @@ public sealed record ParticipantResponse(
     string Role,
     string Credential,
     DateTimeOffset ExpiresAtUtc);
+
+public sealed record ResumedRoomSessionResponse(
+    ResumedRoomResponse Room,
+    ResumedParticipantResponse Participant);
+
+public sealed record ResumedRoomResponse(Guid Id);
+
+public sealed record ResumedParticipantResponse(
+    Guid Id,
+    string Role);

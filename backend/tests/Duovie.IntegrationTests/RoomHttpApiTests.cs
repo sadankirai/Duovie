@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
@@ -125,6 +126,222 @@ public sealed class RoomHttpApiTests : IDisposable
         Assert.Equal(ParticipantRole.Guest, validated.Role);
         Assert.Equal(RoomStatus.Ready, room.Status);
         Assert.Equal(joined.ParticipantId, room.GuestId);
+    }
+
+    [Fact]
+    public async Task Resume_restores_canonical_Host_and_Guest_without_secrets_or_database_mutation()
+    {
+        var created = await CreateRoomAsync(_client);
+        var joined = await JoinRoomAsync(_client, created.RoomId);
+        await using var beforeContext = _fixture.CreateDbContext();
+        var roomCountBefore = await beforeContext.Rooms.CountAsync();
+        var sessionCountBefore = await beforeContext.ParticipantSessions.CountAsync();
+
+        using var hostResponse = await ResumeSessionAsync(
+            _client,
+            created.RoomId,
+            created.Credential);
+        using var guestResponse = await ResumeSessionAsync(
+            _client,
+            joined.RoomId,
+            joined.Credential);
+        var host = await ReadResumedSessionPayloadAsync(hostResponse);
+        var guest = await ReadResumedSessionPayloadAsync(guestResponse);
+
+        Assert.Equal(HttpStatusCode.OK, hostResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, guestResponse.StatusCode);
+        AssertCacheControlNoStore(hostResponse);
+        AssertCacheControlNoStore(guestResponse);
+        Assert.Equal(created.RoomId, host.RoomId);
+        Assert.Equal(created.ParticipantId, host.ParticipantId);
+        Assert.Equal("Host", host.Role);
+        Assert.Equal(joined.RoomId, guest.RoomId);
+        Assert.Equal(joined.ParticipantId, guest.ParticipantId);
+        Assert.Equal("Guest", guest.Role);
+
+        foreach (var payload in new[] { host.RawJson, guest.RawJson })
+        {
+            Assert.False(payload.Contains(created.Credential, StringComparison.Ordinal));
+            Assert.False(payload.Contains(joined.Credential, StringComparison.Ordinal));
+            Assert.False(payload.Contains("credential", StringComparison.OrdinalIgnoreCase));
+            Assert.False(payload.Contains("tokenHash", StringComparison.OrdinalIgnoreCase));
+            Assert.False(payload.Contains("sessionId", StringComparison.OrdinalIgnoreCase));
+            Assert.False(payload.Contains("connectionId", StringComparison.OrdinalIgnoreCase));
+        }
+
+        await using var afterContext = _fixture.CreateDbContext();
+        Assert.Equal(roomCountBefore, await afterContext.Rooms.CountAsync());
+        Assert.Equal(sessionCountBefore, await afterContext.ParticipantSessions.CountAsync());
+        var persistedRoom = await afterContext.Rooms
+            .AsNoTracking()
+            .SingleAsync(room => room.Id == created.RoomId);
+        Assert.Equal(RoomStatus.Ready, persistedRoom.Status);
+        Assert.Equal(created.ParticipantId, persistedRoom.HostId);
+        Assert.Equal(joined.ParticipantId, persistedRoom.GuestId);
+    }
+
+    [Theory]
+    [InlineData(ResumeCredentialCase.Missing)]
+    [InlineData(ResumeCredentialCase.WrongScheme)]
+    [InlineData(ResumeCredentialCase.Malformed)]
+    [InlineData(ResumeCredentialCase.Unknown)]
+    public async Task Missing_malformed_and_unknown_credentials_cannot_resume(
+        ResumeCredentialCase credentialCase)
+    {
+        var created = await CreateRoomAsync(_client);
+        var authorization = credentialCase switch
+        {
+            ResumeCredentialCase.Missing => null,
+            ResumeCredentialCase.WrongScheme => "Basic opaque-value",
+            ResumeCredentialCase.Malformed => "Bearer not-a-valid-credential",
+            ResumeCredentialCase.Unknown => $"Bearer {new string('A', 43)}",
+            _ => throw new ArgumentOutOfRangeException(nameof(credentialCase)),
+        };
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"/api/rooms/{created.RoomId}/session");
+        if (authorization is not null)
+        {
+            request.Headers.TryAddWithoutValidation("Authorization", authorization);
+        }
+
+        using var response = await _client.SendAsync(request);
+
+        AssertCacheControlNoStore(response);
+        await AssertSafeProblemAsync(
+            response,
+            HttpStatusCode.Unauthorized,
+            "Participant session is invalid.",
+            created.Credential);
+    }
+
+    [Fact]
+    public async Task Expired_credential_cannot_resume()
+    {
+        var created = await CreateRoomAsync(_client);
+        using var expiredFactory = new PostgreSqlDuovieApiFactory(
+            _fixture.ConnectionString,
+            timeProvider: new TestTimeProvider(
+                PostgreSqlDuovieApiFactory.UtcNow.Add(SessionLifetime).AddSeconds(1)));
+        using var expiredClient = CreateClient(expiredFactory);
+
+        using var response = await ResumeSessionAsync(
+            expiredClient,
+            created.RoomId,
+            created.Credential);
+
+        AssertCacheControlNoStore(response);
+        await AssertSafeProblemAsync(
+            response,
+            HttpStatusCode.Unauthorized,
+            "Participant session is invalid.",
+            created.Credential);
+    }
+
+    [Fact]
+    public async Task Credential_for_one_Room_cannot_resume_another_Room()
+    {
+        var firstRoom = await CreateRoomAsync(_client);
+        var secondRoom = await CreateRoomAsync(_client);
+
+        using var response = await ResumeSessionAsync(
+            _client,
+            secondRoom.RoomId,
+            firstRoom.Credential);
+
+        AssertCacheControlNoStore(response);
+        await AssertSafeProblemAsync(
+            response,
+            HttpStatusCode.Unauthorized,
+            "Participant session is invalid.",
+            firstRoom.Credential,
+            secondRoom.Credential);
+    }
+
+    [Fact]
+    public async Task Resume_ignores_client_role_and_participant_identity_overrides()
+    {
+        var created = await CreateRoomAsync(_client);
+        var hostileParticipantId = Guid.NewGuid();
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"/api/rooms/{created.RoomId}/session?role=Guest&participantId={hostileParticipantId}");
+        request.Headers.Authorization = new AuthenticationHeaderValue(
+            "Bearer",
+            created.Credential);
+
+        using var response = await _client.SendAsync(request);
+        var resumed = await ReadResumedSessionPayloadAsync(response);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(created.ParticipantId, resumed.ParticipantId);
+        Assert.NotEqual(hostileParticipantId, resumed.ParticipantId);
+        Assert.Equal("Host", resumed.Role);
+        AssertCacheControlNoStore(response);
+    }
+
+    [Fact]
+    public async Task Closed_Room_cannot_be_resumed_by_an_existing_session()
+    {
+        var created = await CreateRoomAsync(_client);
+        await using (var dbContext = _fixture.CreateDbContext())
+        {
+            var room = await dbContext.Rooms.SingleAsync(room => room.Id == created.RoomId);
+            room.Close(PostgreSqlDuovieApiFactory.UtcNow);
+            await dbContext.SaveChangesAsync();
+        }
+
+        using var response = await ResumeSessionAsync(
+            _client,
+            created.RoomId,
+            created.Credential);
+
+        AssertCacheControlNoStore(response);
+        await AssertSafeProblemAsync(
+            response,
+            HttpStatusCode.Unauthorized,
+            "Participant session is invalid.",
+            created.Credential);
+    }
+
+    [Fact]
+    public async Task Expired_Room_cannot_be_resumed_by_a_still_valid_session()
+    {
+        var hostId = Guid.NewGuid();
+        var room = Room.Create(
+            Guid.NewGuid(),
+            hostId,
+            PostgreSqlDuovieApiFactory.UtcNow,
+            PostgreSqlDuovieApiFactory.UtcNow.AddMinutes(10));
+        await SaveRoomAsync(room);
+        IssuedParticipantSession issued;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var sessionService = scope.ServiceProvider
+                .GetRequiredService<ParticipantSessionService>();
+            issued = await sessionService.IssueAsync(
+                room.Id,
+                hostId,
+                ParticipantRole.Host);
+        }
+
+        using var expiredRoomFactory = new PostgreSqlDuovieApiFactory(
+            _fixture.ConnectionString,
+            timeProvider: new TestTimeProvider(
+                PostgreSqlDuovieApiFactory.UtcNow.AddMinutes(11)));
+        using var expiredRoomClient = CreateClient(expiredRoomFactory);
+        using var response = await ResumeSessionAsync(
+            expiredRoomClient,
+            room.Id,
+            issued.Credential);
+
+        AssertCacheControlNoStore(response);
+        await AssertSafeProblemAsync(
+            response,
+            HttpStatusCode.Unauthorized,
+            "Participant session is invalid.",
+            issued.Credential);
     }
 
     [Fact]
@@ -374,6 +591,19 @@ public sealed class RoomHttpApiTests : IDisposable
         return await ReadSessionPayloadAsync(response);
     }
 
+    private static async Task<HttpResponseMessage> ResumeSessionAsync(
+        HttpClient client,
+        Guid roomId,
+        string credential)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"/api/rooms/{roomId}/session");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credential);
+
+        return await client.SendAsync(request);
+    }
+
     private static async Task<RoomSessionPayload> ReadSessionPayloadAsync(HttpResponseMessage response)
     {
         var rawJson = await response.Content.ReadAsStringAsync();
@@ -390,6 +620,41 @@ public sealed class RoomHttpApiTests : IDisposable
             participant.GetProperty("role").GetString()!,
             participant.GetProperty("credential").GetString()!,
             participant.GetProperty("expiresAtUtc").GetDateTimeOffset(),
+            rawJson);
+    }
+
+    private static async Task<ResumedRoomSessionPayload> ReadResumedSessionPayloadAsync(
+        HttpResponseMessage response)
+    {
+        var rawJson = await response.Content.ReadAsStringAsync();
+        using var document = JsonDocument.Parse(rawJson);
+        var root = document.RootElement;
+        var room = root.GetProperty("room");
+        var participant = root.GetProperty("participant");
+
+        Assert.Equal(
+            ["participant", "room"],
+            root.EnumerateObject()
+                .Select(property => property.Name)
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToArray());
+        Assert.Equal(
+            ["id"],
+            room.EnumerateObject()
+                .Select(property => property.Name)
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToArray());
+        Assert.Equal(
+            ["id", "role"],
+            participant.EnumerateObject()
+                .Select(property => property.Name)
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToArray());
+
+        return new ResumedRoomSessionPayload(
+            room.GetProperty("id").GetGuid(),
+            participant.GetProperty("id").GetGuid(),
+            participant.GetProperty("role").GetString()!,
             rawJson);
     }
 
@@ -440,10 +705,32 @@ public sealed class RoomHttpApiTests : IDisposable
         DateTimeOffset SessionExpiresAtUtc,
         string RawJson);
 
+    private sealed record ResumedRoomSessionPayload(
+        Guid RoomId,
+        Guid ParticipantId,
+        string Role,
+        string RawJson);
+
+    private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow()
+        {
+            return utcNow;
+        }
+    }
+
     public enum RoomJoinState
     {
         Expired,
         Closed,
+    }
+
+    public enum ResumeCredentialCase
+    {
+        Missing,
+        WrongScheme,
+        Malformed,
+        Unknown,
     }
 }
 

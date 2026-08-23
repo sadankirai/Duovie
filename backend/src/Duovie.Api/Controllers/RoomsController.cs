@@ -1,9 +1,11 @@
 using Duovie.Api.Configuration;
 using Duovie.Api.Contracts.Rooms;
 using Duovie.Application.ParticipantSessions;
+using Duovie.Application.Rooms;
 using Duovie.Domain.Rooms;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
+using Microsoft.Net.Http.Headers;
 
 namespace Duovie.Api.Controllers;
 
@@ -12,6 +14,8 @@ namespace Duovie.Api.Controllers;
 public sealed class RoomsController(
     CreateRoomSession createRoomSession,
     JoinRoomSession joinRoomSession,
+    ParticipantSessionService participantSessionService,
+    IRoomRepository roomRepository,
     IOptions<RoomOptions> roomOptions,
     TimeProvider timeProvider) : ControllerBase
 {
@@ -20,6 +24,12 @@ public sealed class RoomsController(
 
     private readonly JoinRoomSession _joinRoomSession = joinRoomSession
         ?? throw new ArgumentNullException(nameof(joinRoomSession));
+
+    private readonly ParticipantSessionService _participantSessionService = participantSessionService
+        ?? throw new ArgumentNullException(nameof(participantSessionService));
+
+    private readonly IRoomRepository _roomRepository = roomRepository
+        ?? throw new ArgumentNullException(nameof(roomRepository));
 
     private readonly RoomOptions _roomOptions = roomOptions?.Value
         ?? throw new ArgumentNullException(nameof(roomOptions));
@@ -60,6 +70,45 @@ public sealed class RoomsController(
         return Ok(ToResponse(result.Room, result.Session));
     }
 
+    [HttpGet("{roomId:guid}/session")]
+    [ProducesResponseType<ResumedRoomSessionResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<ResumedRoomSessionResponse>> ResumeSessionAsync(
+        Guid roomId,
+        CancellationToken cancellationToken)
+    {
+        SetCredentialResponseCachePolicy();
+
+        ValidatedParticipantSession session;
+
+        try
+        {
+            session = await _participantSessionService.ValidateAsync(
+                GetBearerCredential(),
+                roomId,
+                cancellationToken);
+        }
+        catch (ParticipantSessionInvalidException)
+        {
+            return InvalidParticipantSession();
+        }
+
+        var room = await _roomRepository.GetByIdAsync(roomId, cancellationToken);
+        if (room is null
+            || room.Status == RoomStatus.Closed
+            || room.IsExpired(_timeProvider.GetUtcNow())
+            || !SessionMatchesRoom(session, room))
+        {
+            return InvalidParticipantSession();
+        }
+
+        return Ok(new ResumedRoomSessionResponse(
+            new ResumedRoomResponse(room.Id),
+            new ResumedParticipantResponse(
+                session.ParticipantId,
+                session.Role.ToString())));
+    }
+
     private static RoomSessionResponse ToResponse(
         Room room,
         IssuedParticipantSession session)
@@ -79,5 +128,40 @@ public sealed class RoomsController(
     private void SetCredentialResponseCachePolicy()
     {
         Response.Headers.CacheControl = "no-store";
+    }
+
+    private string? GetBearerCredential()
+    {
+        var authorization = Request.Headers[HeaderNames.Authorization].ToString();
+        const string bearerPrefix = "Bearer ";
+
+        if (!authorization.StartsWith(bearerPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var credential = authorization[bearerPrefix.Length..];
+        return string.IsNullOrWhiteSpace(credential) ? null : credential;
+    }
+
+    private UnauthorizedObjectResult InvalidParticipantSession()
+    {
+        return Unauthorized(new ProblemDetails
+        {
+            Status = StatusCodes.Status401Unauthorized,
+            Title = "Participant session is invalid.",
+        });
+    }
+
+    private static bool SessionMatchesRoom(
+        ValidatedParticipantSession session,
+        Room room)
+    {
+        return session.Role switch
+        {
+            ParticipantRole.Host => session.ParticipantId == room.HostId,
+            ParticipantRole.Guest => session.ParticipantId == room.GuestId,
+            _ => false,
+        };
     }
 }

@@ -21,6 +21,12 @@ Duovie is a private two-person Movie Date / Watch Together platform. A Host crea
 
 Transitions must be explicit and validated. A temporary Host disconnection does not automatically destroy a room; reconnect/grace behavior will be finalized through later testing, without arbitrary timeout values now.
 
+## Room URL and browser-session continuity
+
+An active participant should have a Room-specific browser URL. The Room identifier in that URL is a shareable locator only: it never grants Host, Guest, or participant authority and must never contain a participant credential. Refreshing the Room URL should preserve a still-valid short-lived participant session after server-side credential validation; opening the same URL without valid participant authority must instead present a safe Join flow subject to the normal Room rules.
+
+The accountless MVP may keep the opaque participant credential in tab-scoped browser-session storage to support same-tab refresh, but it must not trust stored role or participant identity. This is an MVP continuity tradeoff, not the future account/authentication architecture. Realtime connections and WebRTC media state remain ephemeral and are re-established rather than serialized across refresh.
+
 ## Browser and protected-media boundaries
 
 Initial desktop support targets Chrome, Edge, and Safari. Screen-capture and captured-audio support vary by browser and operating system, especially on Safari. Future implementation must detect capabilities and degrade gracefully. Firefox may be evaluated later; mobile browsers are outside MVP scope.

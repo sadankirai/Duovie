@@ -7,18 +7,63 @@ import {
   type RoomSession,
 } from './contracts'
 import { RoomHubClient, type RoomHubHandlers } from './RoomHubClient'
-import { createRoomSession, joinRoomSession } from './roomApi'
+import { createRoomSession, joinRoomSession, resumeRoomSession } from './roomApi'
+import {
+  browserParticipantCredentialStorage,
+  type ParticipantCredentialStorage,
+} from './participantCredentialStorage'
+import {
+  buildPeerRoomPath,
+  buildPeerRootPath,
+  isPeerDevelopmentPath,
+  parsePeerRoomRoute,
+} from './roomRoute'
 import {
   isWebRtcPeerConnectionSupported,
   WebRtcPeerController,
+  type PeerSignaling,
   type RemoteVideoState,
   type ScreenShareState,
 } from './WebRtcPeerController'
 
 type HubStatus = 'disconnected' | 'connecting' | 'connected'
 
-export function PeerDevelopmentHarness() {
+export interface RoomHubRuntime extends PeerSignaling {
+  start: () => Promise<void>
+  stop: () => Promise<void>
+  disconnect: () => Promise<void>
+}
+
+export interface PeerHarnessDependencies {
+  createRoomSession: () => Promise<RoomSession>
+  joinRoomSession: (roomId: string) => Promise<RoomSession>
+  resumeRoomSession: (
+    roomId: string,
+    credential: string,
+    signal?: AbortSignal,
+  ) => Promise<RoomSession>
+  participantCredentialStorage: ParticipantCredentialStorage
+  createHubClient: (
+    session: RoomSession,
+    handlers: RoomHubHandlers,
+  ) => RoomHubRuntime
+}
+
+const defaultDependencies: PeerHarnessDependencies = {
+  createRoomSession,
+  joinRoomSession,
+  resumeRoomSession,
+  participantCredentialStorage: browserParticipantCredentialStorage,
+  createHubClient: (session, handlers) => new RoomHubClient(session, handlers),
+}
+
+export function PeerDevelopmentHarness({
+  dependencies = defaultDependencies,
+}: {
+  dependencies?: PeerHarnessDependencies
+}) {
   const [joinRoomId, setJoinRoomId] = useState('')
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null)
   const [session, setSession] = useState<RoomSession | null>(null)
   const [presence, setPresence] = useState<RoomPresenceParticipant[]>([])
   const [hubStatus, setHubStatus] = useState<HubStatus>('disconnected')
@@ -38,18 +83,25 @@ export function PeerDevelopmentHarness() {
   const [hostScreenShareActive, setHostScreenShareActive] = useState(false)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
-  const hubClientRef = useRef<RoomHubClient | null>(null)
+  const hubClientRef = useRef<RoomHubRuntime | null>(null)
   const peerControllerRef = useRef<WebRtcPeerController | null>(null)
+  const routeGenerationRef = useRef(0)
+  const restoreAbortRef = useRef<AbortController | null>(null)
   const webRtcSupported = isWebRtcPeerConnectionSupported()
 
   const installPeerController = useCallback(
-    (roomSession: RoomSession, hubClient: RoomHubClient) => {
+    (roomSession: RoomSession, hubClient: RoomHubRuntime) => {
       if (!webRtcSupported) {
         return
       }
 
-      const controller = new WebRtcPeerController(roomSession.role, hubClient, {
+      let controller: WebRtcPeerController | null = null
+      controller = new WebRtcPeerController(roomSession.role, hubClient, {
         onStatusChanged: (status) => {
+          if (peerControllerRef.current !== controller) {
+            return
+          }
+
           setPeerStatus(status)
           const currentController = peerControllerRef.current
           setPeerActive(currentController?.hasActivePeer ?? false)
@@ -59,12 +111,20 @@ export function PeerDevelopmentHarness() {
           )
         },
         onSignalSendFailed: () => {
+          if (peerControllerRef.current !== controller) {
+            return
+          }
+
           setPeerActive(false)
           setPeerNeedsReset(true)
           setHostSenderTrackState('not-created')
           setMessage('A peer signal could not be sent. Reset the peer before retrying.')
         },
         onRecoveryNeeded: (reason) => {
+          if (peerControllerRef.current !== controller) {
+            return
+          }
+
           setPeerActive(false)
           setPeerNeedsReset(true)
           setHostSenderTrackState('not-created')
@@ -75,6 +135,10 @@ export function PeerDevelopmentHarness() {
           )
         },
         onScreenShareStateChanged: (state) => {
+          if (peerControllerRef.current !== controller) {
+            return
+          }
+
           setScreenShareState(state)
           const currentController = peerControllerRef.current
           setDisplayCaptureRequestPending(
@@ -83,12 +147,22 @@ export function PeerDevelopmentHarness() {
           setHostSenderTrackState(currentController?.hostSenderTrackState ?? 'not-created')
         },
         onRemoteVideoChanged: (stream, state) => {
+          if (peerControllerRef.current !== controller) {
+            return
+          }
+
           setRemoteVideoStream(stream)
           setRemoteVideoState(state)
         },
-        onHostScreenShareChanged: (active) => setHostScreenShareActive(active),
+        onHostScreenShareChanged: (active) => {
+          if (peerControllerRef.current === controller) {
+            setHostScreenShareActive(active)
+          }
+        },
         onMediaOperationFailed: () => {
-          setMessage('A browser media operation failed safely. The peer remains available.')
+          if (peerControllerRef.current === controller) {
+            setMessage('A browser media operation failed safely. The peer remains available.')
+          }
         },
       })
 
@@ -127,7 +201,7 @@ export function PeerDevelopmentHarness() {
     hubClientRef.current = null
 
     if (hubClient !== null) {
-      await hubClient.stop()
+      await hubClient.stop().catch(() => undefined)
     }
   }, [disposePeer])
 
@@ -169,17 +243,56 @@ export function PeerDevelopmentHarness() {
     [],
   )
 
+  const showSessionlessRoute = useCallback(
+    (roomId: string | null, routeMessage: string | null = null) => {
+      setSession(null)
+      setSelectedRoomId(roomId)
+      setJoinRoomId(roomId ?? '')
+      setPresence([])
+      setHubStatus('disconnected')
+      setPeerStatus(initialPeerConnectionStatus)
+      setHostSenderTrackState('not-created')
+      setPeerActive(false)
+      setPeerNeedsReset(false)
+      setScreenShareState('inactive')
+      setDisplayCaptureRequestPending(false)
+      setRemoteVideoStream(null)
+      setRemoteVideoState('unavailable')
+      setHostScreenShareActive(false)
+      setMessage(routeMessage)
+    },
+    [],
+  )
+
   const connectSession = useCallback(
-    async (roomSession: RoomSession) => {
+    async (roomSession: RoomSession, expectedGeneration: number): Promise<boolean> => {
+      if (routeGenerationRef.current !== expectedGeneration) {
+        return false
+      }
+
       setSession(roomSession)
+      setSelectedRoomId(roomSession.roomId)
+      setJoinRoomId(roomSession.roomId)
       setPresence([])
       setPeerStatus(initialPeerConnectionStatus)
       setHubStatus('connecting')
 
-      let hubClient: RoomHubClient | null = null
+      let hubClient: RoomHubRuntime | null = null
+      const isCurrentHub = () =>
+        hubClient !== null &&
+        hubClientRef.current === hubClient &&
+        routeGenerationRef.current === expectedGeneration
       const handlers: RoomHubHandlers = {
-        onPresenceSnapshot: (snapshot) => setPresence(snapshot.participants),
+        onPresenceSnapshot: (snapshot) => {
+          if (isCurrentHub()) {
+            setPresence(snapshot.participants)
+          }
+        },
         onPresenceChanged: (participant) => {
+          if (!isCurrentHub()) {
+            return
+          }
+
           setPresence((current) => {
             const withoutParticipant = current.filter(
               (item) => item.participantId !== participant.participantId,
@@ -192,22 +305,30 @@ export function PeerDevelopmentHarness() {
           resetPeerForOfflineParticipant(participant, roomSession.role)
         },
         onWebRtcOffer: (offer) => {
-          applyPeerSignal((peer) => peer.handleOffer(offer))
+          if (isCurrentHub()) {
+            applyPeerSignal((peer) => peer.handleOffer(offer))
+          }
         },
         onWebRtcAnswer: (answer) => {
-          applyPeerSignal((peer) => peer.handleAnswer(answer))
+          if (isCurrentHub()) {
+            applyPeerSignal((peer) => peer.handleAnswer(answer))
+          }
         },
         onIceCandidate: (candidate) => {
-          applyPeerSignal((peer) => peer.handleRemoteIceCandidate(candidate))
+          if (isCurrentHub()) {
+            applyPeerSignal((peer) => peer.handleRemoteIceCandidate(candidate))
+          }
         },
         onScreenShareStateChanged: (state: RoomScreenShareStateChanged) => {
-          if (hubClient === null || hubClientRef.current !== hubClient) {
+          if (isCurrentHub()) {
+            peerControllerRef.current?.handleScreenShareStateChanged(state)
+          }
+        },
+        onDisconnected: () => {
+          if (!isCurrentHub()) {
             return
           }
 
-          peerControllerRef.current?.handleScreenShareStateChanged(state)
-        },
-        onDisconnected: () => {
           disposePeer()
           setHubStatus('disconnected')
           setPresence([])
@@ -215,41 +336,210 @@ export function PeerDevelopmentHarness() {
         },
       }
 
-      hubClient = new RoomHubClient(roomSession, handlers)
+      hubClient = dependencies.createHubClient(roomSession, handlers)
       hubClientRef.current = hubClient
       installPeerController(roomSession, hubClient)
 
       await hubClient.start()
+      if (!isCurrentHub()) {
+        if (hubClientRef.current === hubClient) {
+          hubClientRef.current = null
+        }
+
+        await hubClient.stop().catch(() => undefined)
+        return false
+      }
+
       setHubStatus('connected')
+      return true
     },
-    [applyPeerSignal, disposePeer, installPeerController, resetPeerForOfflineParticipant],
+    [
+      applyPeerSignal,
+      dependencies,
+      disposePeer,
+      installPeerController,
+      resetPeerForOfflineParticipant,
+    ],
+  )
+
+  const bootstrapRoute = useCallback(
+    async (pathname: string) => {
+      const generation = ++routeGenerationRef.current
+      restoreAbortRef.current?.abort()
+      const abortController = new AbortController()
+      restoreAbortRef.current = abortController
+
+      if (
+        window.location.pathname === pathname &&
+        (window.location.search !== '' ||
+          window.location.hash !== '' ||
+          window.history.state !== null)
+      ) {
+        window.history.replaceState(null, '', pathname)
+      }
+
+      await disposeRuntime()
+      if (routeGenerationRef.current !== generation) {
+        return
+      }
+
+      const route = parsePeerRoomRoute(pathname)
+      if (route.kind === 'invalid') {
+        if (isPeerDevelopmentPath(pathname)) {
+          window.history.replaceState(null, '', buildPeerRootPath())
+          showSessionlessRoute(null, 'The Room URL was invalid and was cleared safely.')
+        } else {
+          showSessionlessRoute(null)
+        }
+
+        setBusy(false)
+        return
+      }
+
+      if (route.kind === 'root') {
+        showSessionlessRoute(null)
+        setBusy(false)
+        return
+      }
+
+      showSessionlessRoute(route.roomId)
+      const credential = dependencies.participantCredentialStorage.read(route.roomId)
+      if (credential === null) {
+        setBusy(false)
+        return
+      }
+
+      setBusy(true)
+      let restoredSession: RoomSession
+      try {
+        restoredSession = await dependencies.resumeRoomSession(
+          route.roomId,
+          credential,
+          abortController.signal,
+        )
+      } catch {
+        if (
+          abortController.signal.aborted ||
+          routeGenerationRef.current !== generation
+        ) {
+          return
+        }
+
+        dependencies.participantCredentialStorage.remove(route.roomId)
+        showSessionlessRoute(
+          route.roomId,
+          'The stored participant session is no longer usable. Join the Room again.',
+        )
+        setBusy(false)
+        return
+      }
+
+      if (
+        abortController.signal.aborted ||
+        routeGenerationRef.current !== generation
+      ) {
+        return
+      }
+
+      if (restoredSession.roomId.toLowerCase() !== route.roomId) {
+        dependencies.participantCredentialStorage.remove(route.roomId)
+        showSessionlessRoute(
+          route.roomId,
+          'The stored participant session could not be bound to this Room.',
+        )
+        setBusy(false)
+        return
+      }
+
+      try {
+        await connectSession(
+          { ...restoredSession, credential },
+          generation,
+        )
+      } catch {
+        if (routeGenerationRef.current === generation) {
+          await disposeRuntime()
+          showSessionlessRoute(
+            route.roomId,
+            'The participant session was valid, but the Room Hub could not reconnect.',
+          )
+        }
+      } finally {
+        if (routeGenerationRef.current === generation) {
+          setBusy(false)
+        }
+      }
+    },
+    [connectSession, dependencies, disposeRuntime, showSessionlessRoute],
+  )
+
+  const activateIssuedSession = useCallback(
+    async (roomSession: RoomSession, actionGeneration: number) => {
+      if (routeGenerationRef.current !== actionGeneration) {
+        return false
+      }
+
+      dependencies.participantCredentialStorage.write(
+        roomSession.roomId,
+        roomSession.credential,
+      )
+      restoreAbortRef.current?.abort()
+      const generation = ++routeGenerationRef.current
+      const roomPath = buildPeerRoomPath(roomSession.roomId)
+      if (window.location.pathname === roomPath) {
+        window.history.replaceState(null, '', roomPath)
+      } else {
+        window.history.pushState(null, '', roomPath)
+      }
+      setSelectedRoomId(roomSession.roomId)
+      setJoinRoomId(roomSession.roomId)
+
+      return connectSession(roomSession, generation)
+    },
+    [connectSession, dependencies],
   )
 
   const resetSession = useCallback(async () => {
+    const roomId = session?.roomId ?? selectedRoomId
+    ++routeGenerationRef.current
+    restoreAbortRef.current?.abort()
+    if (roomId !== null) {
+      dependencies.participantCredentialStorage.remove(roomId)
+    }
+
     setBusy(true)
 
     try {
       await disposeRuntime()
     } finally {
-      setSession(null)
-      setPresence([])
-      setHubStatus('disconnected')
-      setPeerStatus(initialPeerConnectionStatus)
-      setHostSenderTrackState('not-created')
-      setPeerActive(false)
-      setPeerNeedsReset(false)
-      setScreenShareState('inactive')
-      setDisplayCaptureRequestPending(false)
-      setRemoteVideoStream(null)
-      setRemoteVideoState('unavailable')
-      setHostScreenShareActive(false)
-      setMessage(null)
+      window.history.pushState(null, '', buildPeerRootPath())
+      showSessionlessRoute(null)
       setBusy(false)
     }
-  }, [disposeRuntime])
+  }, [dependencies, disposeRuntime, selectedRoomId, session, showSessionlessRoute])
+
+  const invalidateRouteOwnership = useCallback(() => {
+    ++routeGenerationRef.current
+    restoreAbortRef.current?.abort()
+  }, [])
 
   useEffect(() => {
+    let active = true
+    const handlePopState = () => {
+      void bootstrapRoute(window.location.pathname)
+    }
+
+    window.addEventListener('popstate', handlePopState)
+    queueMicrotask(() => {
+      if (active) {
+        void bootstrapRoute(window.location.pathname)
+      }
+    })
+
     return () => {
+      active = false
+      window.removeEventListener('popstate', handlePopState)
+      invalidateRouteOwnership()
       peerControllerRef.current?.close()
       peerControllerRef.current = null
       const hubClient = hubClientRef.current
@@ -259,14 +549,18 @@ export function PeerDevelopmentHarness() {
         void hubClient.stop().catch(() => undefined)
       }
     }
-  }, [])
+  }, [bootstrapRoute, invalidateRouteOwnership])
 
   const createRoom = async () => {
+    const actionGeneration = routeGenerationRef.current
     setBusy(true)
     setMessage(null)
 
     try {
-      await connectSession(await createRoomSession())
+      const roomSession = await dependencies.createRoomSession()
+      if (!await activateIssuedSession(roomSession, actionGeneration)) {
+        return
+      }
     } catch {
       await disposeRuntime()
       setSession(null)
@@ -279,7 +573,7 @@ export function PeerDevelopmentHarness() {
 
   const joinRoom = async (event: FormEvent) => {
     event.preventDefault()
-    const roomId = joinRoomId.trim()
+    const roomId = selectedRoomId ?? joinRoomId.trim()
 
     if (!roomId) {
       setMessage('Enter a Room ID to join.')
@@ -288,9 +582,13 @@ export function PeerDevelopmentHarness() {
 
     setBusy(true)
     setMessage(null)
+    const actionGeneration = routeGenerationRef.current
 
     try {
-      await connectSession(await joinRoomSession(roomId))
+      const roomSession = await dependencies.joinRoomSession(roomId)
+      if (!await activateIssuedSession(roomSession, actionGeneration)) {
+        return
+      }
     } catch {
       await disposeRuntime()
       setSession(null)
@@ -434,6 +732,8 @@ export function PeerDevelopmentHarness() {
       return
     }
 
+    const expectedGeneration = routeGenerationRef.current
+
     setBusy(true)
     setMessage(null)
     setHubStatus('connecting')
@@ -441,9 +741,24 @@ export function PeerDevelopmentHarness() {
 
     try {
       await hubClient.start()
+      if (
+        hubClientRef.current !== hubClient ||
+        routeGenerationRef.current !== expectedGeneration
+      ) {
+        await hubClient.stop().catch(() => undefined)
+        return
+      }
+
       setHubStatus('connected')
       setMessage('The Room Hub reconnected. Start a fresh peer negotiation when ready.')
     } catch {
+      if (
+        hubClientRef.current !== hubClient ||
+        routeGenerationRef.current !== expectedGeneration
+      ) {
+        return
+      }
+
       disposePeer()
       setHubStatus('disconnected')
       setMessage('The Room Hub could not reconnect. Retry or reset the session.')
@@ -452,16 +767,16 @@ export function PeerDevelopmentHarness() {
     }
   }
 
-  const copyRoomId = async () => {
+  const copyRoomUrl = async () => {
     if (session === null) {
       return
     }
 
     try {
-      await navigator.clipboard.writeText(session.roomId)
-      setMessage('Room ID copied.')
+      await navigator.clipboard.writeText(window.location.href)
+      setMessage('Room URL copied. It contains no participant credential.')
     } catch {
-      setMessage('Copy failed. Select the Room ID manually.')
+      setMessage('Copy failed. Select the Room URL from the address bar.')
     }
   }
 
@@ -490,26 +805,40 @@ export function PeerDevelopmentHarness() {
 
       {session === null ? (
         <section className="peer-entry" aria-label="Room session setup">
-          <div>
-            <h2>Host</h2>
-            <button type="button" disabled={busy} onClick={() => void createRoom()}>
-              Create Room
-            </button>
-          </div>
+          {selectedRoomId === null ? (
+            <>
+              <div>
+                <h2>Host</h2>
+                <button type="button" disabled={busy} onClick={() => void createRoom()}>
+                  Create Room
+                </button>
+              </div>
 
-          <form onSubmit={(event) => void joinRoom(event)}>
-            <h2>Guest</h2>
-            <label htmlFor="room-id">Room ID</label>
-            <input
-              id="room-id"
-              value={joinRoomId}
-              onChange={(event) => setJoinRoomId(event.target.value)}
-              autoComplete="off"
-            />
-            <button type="submit" disabled={busy}>
-              Join Room
-            </button>
-          </form>
+              <form onSubmit={(event) => void joinRoom(event)}>
+                <h2>Guest</h2>
+                <label htmlFor="room-id">Room ID</label>
+                <input
+                  id="room-id"
+                  value={joinRoomId}
+                  onChange={(event) => setJoinRoomId(event.target.value)}
+                  autoComplete="off"
+                />
+                <button type="submit" disabled={busy}>
+                  Join Room
+                </button>
+              </form>
+            </>
+          ) : (
+            <form onSubmit={(event) => void joinRoom(event)}>
+              <h2>Join Room</h2>
+              <span className="peer-label">Room ID</span>
+              <output>{selectedRoomId}</output>
+              <p>This URL identifies the Room but grants no participant authority.</p>
+              <button type="submit" disabled={busy}>
+                Join Room
+              </button>
+            </form>
+          )}
         </section>
       ) : (
         <section className="peer-session" aria-label="Active peer session">
@@ -522,8 +851,8 @@ export function PeerDevelopmentHarness() {
               <span className="peer-label">Room ID</span>
               <output>{session.roomId}</output>
             </div>
-            <button type="button" onClick={() => void copyRoomId()}>
-              Copy Room ID
+            <button type="button" onClick={() => void copyRoomUrl()}>
+              Copy Room URL
             </button>
           </div>
 
