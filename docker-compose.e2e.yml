@@ -1,0 +1,17 @@
+services:
+  postgres-e2e:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: duovie_e2e
+      POSTGRES_USER: duovie_e2e
+      POSTGRES_PASSWORD: duovie_e2e_local_only
+    ports:
+      - "127.0.0.1:55432:5432"
+    tmpfs:
+      - /var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+      start_period: 2s

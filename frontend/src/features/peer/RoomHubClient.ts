@@ -14,6 +14,7 @@ import {
   type RoomSession,
   type RoomWebRtcAnswer,
   type RoomWebRtcOffer,
+  type RoomWebRtcRecoveryRequested,
 } from './contracts'
 import type { PeerSignaling } from './WebRtcPeerController'
 
@@ -23,6 +24,7 @@ export interface RoomHubHandlers {
   onWebRtcOffer: (offer: RoomWebRtcOffer) => void
   onWebRtcAnswer: (answer: RoomWebRtcAnswer) => void
   onIceCandidate: (candidate: RoomIceCandidate) => void
+  onWebRtcRecoveryRequested: (request: RoomWebRtcRecoveryRequested) => void
   onScreenShareStateChanged: (state: RoomScreenShareStateChanged) => void
   onDisconnected: () => void
 }
@@ -87,6 +89,10 @@ export class RoomHubClient implements PeerSignaling {
     )
   }
 
+  public async requestPeerRecovery(): Promise<void> {
+    await this.connection.invoke(roomHubMethods.requestWebRtcRecovery)
+  }
+
   public async sendScreenShareState(active: boolean): Promise<void> {
     await this.connection.invoke(roomHubMethods.sendScreenShareState, active)
   }
@@ -97,6 +103,10 @@ export class RoomHubClient implements PeerSignaling {
     this.connection.on(roomHubEvents.webRtcOffer, this.handlers.onWebRtcOffer)
     this.connection.on(roomHubEvents.webRtcAnswer, this.handlers.onWebRtcAnswer)
     this.connection.on(roomHubEvents.iceCandidate, this.handlers.onIceCandidate)
+    this.connection.on(
+      roomHubEvents.webRtcRecoveryRequested,
+      this.handlers.onWebRtcRecoveryRequested,
+    )
     this.connection.on(
       roomHubEvents.screenShareStateChanged,
       this.handlers.onScreenShareStateChanged,
@@ -109,6 +119,10 @@ export class RoomHubClient implements PeerSignaling {
     this.connection.off(roomHubEvents.webRtcOffer, this.handlers.onWebRtcOffer)
     this.connection.off(roomHubEvents.webRtcAnswer, this.handlers.onWebRtcAnswer)
     this.connection.off(roomHubEvents.iceCandidate, this.handlers.onIceCandidate)
+    this.connection.off(
+      roomHubEvents.webRtcRecoveryRequested,
+      this.handlers.onWebRtcRecoveryRequested,
+    )
     this.connection.off(
       roomHubEvents.screenShareStateChanged,
       this.handlers.onScreenShareStateChanged,

@@ -894,6 +894,7 @@ class FakePeerSignaling implements PeerSignaling {
   public readonly offers: string[] = []
   public readonly answers: string[] = []
   public readonly candidates: RTCIceCandidateInit[] = []
+  public recoveryRequestCount = 0
   public readonly screenShareStateCalls: boolean[] = []
   public offerError: Error | null = null
   public answerError: Error | null = null
@@ -926,6 +927,10 @@ class FakePeerSignaling implements PeerSignaling {
     }
 
     this.candidates.push(candidate)
+  }
+
+  public async requestPeerRecovery(): Promise<void> {
+    this.recoveryRequestCount += 1
   }
 
   public async sendScreenShareState(active: boolean): Promise<void> {

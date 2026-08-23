@@ -13,6 +13,7 @@ export interface PeerSignaling {
   sendOffer: (sdp: string) => Promise<void>
   sendAnswer: (sdp: string) => Promise<void>
   sendIceCandidate: (candidate: RTCIceCandidateInit) => Promise<void>
+  requestPeerRecovery: () => Promise<void>
   sendScreenShareState: (active: boolean) => Promise<void>
 }
 

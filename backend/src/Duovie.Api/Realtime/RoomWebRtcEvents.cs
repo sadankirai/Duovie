@@ -5,5 +5,5 @@ public static class RoomWebRtcEvents
     public const string Offer = "RoomWebRtcOffer";
     public const string Answer = "RoomWebRtcAnswer";
     public const string IceCandidate = "RoomIceCandidate";
+    public const string RecoveryRequested = "RoomWebRtcRecoveryRequested";
 }
-

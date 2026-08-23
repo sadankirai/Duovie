@@ -27,15 +27,21 @@ An active participant should have a Room-specific browser URL. The Room identifi
 
 The accountless MVP may keep the opaque participant credential in tab-scoped browser-session storage to support same-tab refresh, but it must not trust stored role or participant identity. This is an MVP continuity tradeoff, not the future account/authentication architecture. Realtime connections and WebRTC media state remain ephemeral and are re-established rather than serialized across refresh.
 
+## Automatic Room runtime
+
+Normal participants do not operate signaling, ICE, Hub, or peer-connection lifecycle controls. After both authorized participants are online, the Host deterministically initiates WebRTC negotiation and the Guest waits for the Host Offer. Duplicate presence must not create duplicate attempts; counterpart departure and terminal peer failure clean up media and peer state safely, then bounded automatic recovery uses a fresh peer when the counterpart remains available. These states are runtime diagnostics, not authority.
+
+Screen capture remains an explicit Host action after P2P is connected. Automatic negotiation or recovery must never start or resume capture. Display, tab, or system audio is deferred until later browser-media polish and is not part of the current video-sharing flow.
+
 ## Browser and protected-media boundaries
 
-Initial desktop support targets Chrome, Edge, and Safari. Screen-capture and captured-audio support vary by browser and operating system, especially on Safari. Future implementation must detect capabilities and degrade gracefully. Firefox may be evaluated later; mobile browsers are outside MVP scope.
+Initial desktop support targets Chrome, Edge, and Safari. Screen-capture and any later captured-audio support vary by browser and operating system, especially on Safari. Future implementation must detect capabilities and degrade gracefully. Firefox may be evaluated later; mobile browsers are outside MVP scope.
 
 Duovie must never bypass DRM, HDCP, browser content protection, or protected-media restrictions. Blocked capture is a platform limitation, not a condition to circumvent.
 
 ## MVP and exclusions
 
-The MVP validates a stable private two-person watch session: room creation/invitation, one Guest, realtime chat, Host-only sharing, P2P connectivity with TURN fallback, and basic connection health/recovery. Stability takes precedence over headline resolution or FPS promises.
+The MVP validates a stable private two-person watch session: room creation/invitation, one Guest, realtime chat, Host-only screen video, P2P connectivity with TURN fallback, and basic connection health/recovery. Audio/browser-media polish follows the functional Room and professional UI work. Stability takes precedence over headline resolution or FPS promises.
 
 Excluded unless a later approved decision introduces them: camera, microphone/voice chat, Guest playback controls, remote input, browser extension, streaming-service synchronization, accounts, subscriptions/plans/payments/Stripe, social features, mobile apps, recording, and DRM bypassing.
 

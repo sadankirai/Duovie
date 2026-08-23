@@ -34,9 +34,13 @@ frontend/src/
 
 Organize primarily by feature. Avoid premature state-management complexity.
 
+Room runtime lifecycle policy is feature-local and separate from rendering and WebRTC mechanics. The React Room screen projects `RoomRuntime` state and invokes product actions; `RoomRuntime` owns presence-driven negotiation, bounded fresh-peer recovery, and Hub/peer ownership; `RoomHubClient` owns SignalR transport; and `WebRtcPeerController` owns browser WebRTC and media operations. The Host is the only Offer initiator, preventing glare. A small trusted recovery-request event lets either failed peer ask the opposite runtime to replace its peer while the Host remains the deterministic initiator.
+
 ## Realtime and media boundaries
 
 SignalR transports application events: presence, chat, offers/answers, ICE candidates, and connection events. WebRTC transports normal shared media directly peer-to-peer whenever possible. STUN/ICE facilitates connection establishment; TURN is only a fallback. TURN credentials must be server-issued and short-lived when needed—never permanent browser-exposed secrets. The backend must not proxy, transcode, record, or normally relay media.
+
+WebRTC, presence, recovery state, and screen-share activity remain ephemeral. Refresh restores only the server-validated participant session and reconnects the Hub; automatic runtime orchestration then creates a fresh peer when both participants are online. Capture remains an explicit Host action and is never automatically restored.
 
 Host-only publication and two-person capacity are server/realtime authorization concerns, not UI conventions. Consult the accepted ADRs before changing these boundaries.
 

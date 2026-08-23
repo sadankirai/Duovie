@@ -56,11 +56,15 @@ Task 0.1 is documentation only. It does not create applications, packages, Docke
 
 ## Stage 5 — Host-Only Screen Sharing
 
+**Status:** Task 5.1 Host-only screen video sharing and the Room URL/refresh-continuity checkpoint are complete. Stage 5 is not complete. Automatic Room Runtime Orchestration and the browser E2E foundation are the current architectural checkpoint before Stage 6.
+
 **Objective:** deliver authorized supported-content sharing.  
-**Scope:** `getDisplayMedia`, Host-only authorization, browser tab/window/screen targets where supported, Guest playback, supported captured audio, and unsupported-capability handling.  
+**Scope:** `getDisplayMedia`, Host-only authorization, browser tab/window/screen video where supported, Guest playback, automatic Host-initiated peer orchestration, and unsupported-capability handling.
 **Non-goal:** DRM circumvention or universal audio support.  
 **Deliverables:** Host sharing and Guest viewing flow.  
 **Exit criteria:** Guests cannot publish and capability limitations are communicated gracefully.
+
+Captured display/tab/system audio is intentionally deferred until later browser-media polish. The sequence after the current orchestration/E2E checkpoint is STUN/TURN real-network reliability, stability and quality, a functional product Room, professional UI based on the approved design direction, later audio/browser-media polish, security hardening, and deployment.
 
 ## Stage 6 — STUN / TURN Reliability
 

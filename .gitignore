@@ -9,6 +9,8 @@
 # Node.js build output
 node_modules/
 dist/
+playwright-report/
+test-results/
 
 # Local environment files (keep intentional examples)
 .env

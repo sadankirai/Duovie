@@ -203,6 +203,22 @@ public sealed class RoomHub(
                 Context.ConnectionAborted);
     }
 
+    public async Task RequestWebRtcRecovery()
+    {
+        var identity = GetConnectionIdentity(RoomWebRtcSignalingRules.InvalidSignalError);
+        var request = new RoomWebRtcRecoveryRequested(
+            identity.ParticipantId,
+            identity.Role.ToString());
+
+        await Clients.Group(GetRoomRoleGroupName(
+                identity.RoomId,
+                GetOppositeRole(identity.Role)))
+            .SendAsync(
+                RoomWebRtcEvents.RecoveryRequested,
+                request,
+                Context.ConnectionAborted);
+    }
+
     public async Task SendScreenShareState(bool active)
     {
         var identity = GetConnectionIdentity(RoomScreenShareStateChanged.InvalidRequestError);

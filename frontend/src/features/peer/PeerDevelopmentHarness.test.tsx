@@ -4,10 +4,13 @@ import {
   GuestRemoteVideo,
   PeerDevelopmentHarness,
   type PeerHarnessDependencies,
-  type RoomHubRuntime,
+  type RoomRuntimeController,
 } from './PeerDevelopmentHarness'
 import { browserParticipantCredentialStorage } from './participantCredentialStorage'
-import type { RoomHubHandlers } from './RoomHubClient'
+import {
+  initialRoomRuntimeSnapshot,
+  type RoomRuntimeCallbacks,
+} from './RoomRuntime'
 import type { RoomSession } from './contracts'
 
 describe('GuestRemoteVideo', () => {
@@ -54,6 +57,78 @@ describe('GuestRemoteVideo', () => {
     unmount()
     expect(video.srcObject).toBeNull()
   })
+
+  it('attempts automatic muted playback and shows no manual-playback warning on success', async () => {
+    const play = vi
+      .spyOn(HTMLMediaElement.prototype, 'play')
+      .mockResolvedValue(undefined)
+    const stream = {} as MediaStream
+    render(<GuestRemoteVideo active stream={stream} />)
+    const video = screen.getByLabelText('Host shared display') as HTMLVideoElement
+
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(1))
+
+    expect(video).toHaveProperty('muted', true)
+    expect(video).toHaveAttribute('autoplay')
+    expect(video).toHaveAttribute('playsinline')
+    expect(
+      screen.queryByText('Playback needs a user action. Use the video controls to play.'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('falls back safely without a peer failure when autoplay is rejected', async () => {
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockRejectedValue(
+      new DOMException('autoplay blocked', 'NotAllowedError'),
+    )
+    const stream = {} as MediaStream
+    render(<GuestRemoteVideo active stream={stream} />)
+    const video = screen.getByLabelText('Host shared display') as HTMLVideoElement
+
+    await waitFor(() =>
+      expect(
+        screen.getByText('Playback needs a user action. Use the video controls to play.'),
+      ).toBeInTheDocument(),
+    )
+
+    expect(video).not.toHaveAttribute('hidden')
+    expect(video).toHaveAttribute('controls')
+    expect(video.srcObject).toBe(stream)
+  })
+
+  it('resumes automatic playback for a new stream when sharing repeats', async () => {
+    const play = vi
+      .spyOn(HTMLMediaElement.prototype, 'play')
+      .mockResolvedValue(undefined)
+    const firstStream = {} as MediaStream
+    const { rerender } = render(<GuestRemoteVideo active stream={firstStream} />)
+    const video = screen.getByLabelText('Host shared display') as HTMLVideoElement
+
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(1))
+
+    rerender(<GuestRemoteVideo active={false} stream={null} />)
+    expect(video).toHaveAttribute('hidden')
+
+    const secondStream = {} as MediaStream
+    rerender(<GuestRemoteVideo active stream={secondStream} />)
+
+    await waitFor(() => expect(video.srcObject).toBe(secondStream))
+    expect(play).toHaveBeenCalledTimes(2)
+    expect(video).not.toHaveAttribute('hidden')
+  })
+
+  it('never introduces audio support for the video-only remote stream', async () => {
+    const play = vi
+      .spyOn(HTMLMediaElement.prototype, 'play')
+      .mockResolvedValue(undefined)
+    const stream = {} as MediaStream
+    render(<GuestRemoteVideo active stream={stream} />)
+    const video = screen.getByLabelText('Host shared display') as HTMLVideoElement
+
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(1))
+
+    expect(video).toHaveProperty('muted', true)
+    expect(screen.queryByLabelText(/audio/i)).not.toBeInTheDocument()
+  })
 })
 
 const firstRoomId = 'a3f45d1e-6c6e-4cab-9dc8-246a2bc74995'
@@ -96,8 +171,8 @@ describe('PeerDevelopmentHarness Room session continuity', () => {
     expect(fixture.createRoomSession).toHaveBeenCalledTimes(1)
     expect(browserParticipantCredentialStorage.read(firstRoomId)).toBe(hostCredential)
     expect(screen.getByText('Host', { selector: 'strong' })).toBeInTheDocument()
-    expect(fixture.hubs).toHaveLength(1)
-    expect(fixture.hubs[0].startCount).toBe(1)
+    expect(fixture.runtimes).toHaveLength(1)
+    expect(fixture.runtimes[0].startCount).toBe(1)
     const navigation = pushState.mock.calls.at(-1)
     expect(navigation?.[0]).toBeNull()
     expect(navigation?.[2]).toBe(`/dev/peer/${firstRoomId}`)
@@ -105,6 +180,18 @@ describe('PeerDevelopmentHarness Room session continuity', () => {
     expect(window.location.search).toBe('')
     expect(window.location.hash).toBe('')
     expect(JSON.stringify(window.history.state)).not.toContain(hostCredential)
+  })
+
+  it('keeps networking controls out of the primary Host flow', async () => {
+    const hostFixture = createHarnessFixture()
+    render(<PeerDevelopmentHarness dependencies={hostFixture.dependencies} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Create Room' }))
+
+    await screen.findByRole('button', { name: 'Share Screen' })
+    expect(screen.getByRole('button', { name: 'Reset Session' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start P2P' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reset Peer' })).not.toBeInTheDocument()
+    expect(screen.getByText('Developer diagnostics / controls')).toBeInTheDocument()
   })
 
   it('binds a direct Room locator to Join and stores the issued Guest session', async () => {
@@ -124,6 +211,8 @@ describe('PeerDevelopmentHarness Room session continuity', () => {
     expect(window.location.pathname).toBe(`/dev/peer/${firstRoomId}`)
     expect(window.location.href).not.toContain(guestCredential)
     expect(screen.getByText('Guest', { selector: 'strong' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Share Screen' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start P2P' })).not.toBeInTheDocument()
   })
 
   it('moves a Guest joining from the root form to the Room-specific URL', async () => {
@@ -162,14 +251,14 @@ describe('PeerDevelopmentHarness Room session continuity', () => {
       hostCredential,
       expect.any(AbortSignal),
     )
-    expect(fixture.hubs).toHaveLength(1)
-    expect(fixture.hubs[0].session).toEqual({
+    expect(fixture.runtimes).toHaveLength(1)
+    expect(fixture.runtimes[0].session).toEqual({
       roomId: firstRoomId,
       participantId: guestSession.participantId,
       role: 'Guest',
       credential: hostCredential,
     })
-    expect(fixture.hubs[0].startCount).toBe(1)
+    expect(fixture.runtimes[0].startCount).toBe(1)
     expect(screen.getAllByText('new')).toHaveLength(3)
   })
 
@@ -185,7 +274,7 @@ describe('PeerDevelopmentHarness Room session continuity', () => {
       screen.getByText('The stored participant session is no longer usable. Join the Room again.'),
     ).toBeInTheDocument()
     expect(browserParticipantCredentialStorage.read(firstRoomId)).toBeNull()
-    expect(fixture.hubs).toHaveLength(0)
+    expect(fixture.runtimes).toHaveLength(0)
     expect(screen.queryByText('expired private detail')).not.toBeInTheDocument()
   })
 
@@ -197,7 +286,7 @@ describe('PeerDevelopmentHarness Room session continuity', () => {
 
     expect(await screen.findByText(secondRoomId)).toBeInTheDocument()
     expect(fixture.resumeRoomSession).not.toHaveBeenCalled()
-    expect(fixture.hubs).toHaveLength(0)
+    expect(fixture.runtimes).toHaveLength(0)
     expect(browserParticipantCredentialStorage.read(firstRoomId)).toBe(hostCredential)
   })
 
@@ -212,7 +301,7 @@ describe('PeerDevelopmentHarness Room session continuity', () => {
 
     await waitFor(() => expect(window.location.pathname).toBe('/dev/peer'))
     expect(browserParticipantCredentialStorage.read(firstRoomId)).toBeNull()
-    expect(fixture.hubs[0].stopCount).toBeGreaterThanOrEqual(1)
+    expect(fixture.runtimes[0].stopCount).toBeGreaterThanOrEqual(1)
     expect(screen.getByRole('button', { name: 'Create Room' })).toBeInTheDocument()
   })
 
@@ -232,7 +321,7 @@ describe('PeerDevelopmentHarness Room session continuity', () => {
     firstRestore.resolve(hostSession)
     await Promise.resolve()
 
-    expect(fixture.hubs).toHaveLength(0)
+    expect(fixture.runtimes).toHaveLength(0)
     expect(screen.queryByText('Host', { selector: 'strong' })).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Join Room' })).toBeInTheDocument()
   })
@@ -248,7 +337,7 @@ describe('PeerDevelopmentHarness Room session continuity', () => {
     window.history.pushState(null, '', '/')
     window.dispatchEvent(new PopStateEvent('popstate'))
 
-    await waitFor(() => expect(fixture.hubs[0].stopCount).toBeGreaterThanOrEqual(1))
+    await waitFor(() => expect(fixture.runtimes[0].stopCount).toBeGreaterThanOrEqual(1))
     expect(window.location.pathname).toBe('/')
     expect(screen.getByRole('button', { name: 'Create Room' })).toBeInTheDocument()
     expect(browserParticipantCredentialStorage.read(firstRoomId)).toBe(hostCredential)
@@ -261,12 +350,12 @@ function createHarnessFixture() {
   const joinRoomSession = vi.fn<PeerHarnessDependencies['joinRoomSession']>()
     .mockResolvedValue(guestSession)
   const resumeRoomSession = vi.fn<PeerHarnessDependencies['resumeRoomSession']>()
-  const hubs: FakeRoomHubRuntime[] = []
-  const createHubClient = vi.fn<PeerHarnessDependencies['createHubClient']>(
-    (session, handlers) => {
-      const hub = new FakeRoomHubRuntime(session, handlers)
-      hubs.push(hub)
-      return hub
+  const runtimes: FakeRoomRuntime[] = []
+  const createRoomRuntime = vi.fn<PeerHarnessDependencies['createRoomRuntime']>(
+    (session, callbacks) => {
+      const runtime = new FakeRoomRuntime(session, callbacks)
+      runtimes.push(runtime)
+      return runtime
     },
   )
   const dependencies: PeerHarnessDependencies = {
@@ -274,7 +363,7 @@ function createHarnessFixture() {
     joinRoomSession,
     resumeRoomSession,
     participantCredentialStorage: browserParticipantCredentialStorage,
-    createHubClient,
+    createRoomRuntime,
   }
 
   return {
@@ -282,52 +371,42 @@ function createHarnessFixture() {
     createRoomSession,
     joinRoomSession,
     resumeRoomSession,
-    createHubClient,
-    hubs,
+    createRoomRuntime,
+    runtimes,
   }
 }
 
-class FakeRoomHubRuntime implements RoomHubRuntime {
+class FakeRoomRuntime implements RoomRuntimeController {
   public startCount = 0
   public stopCount = 0
-  private connected = false
   public readonly session: RoomSession
-  private readonly handlers: RoomHubHandlers
+  private readonly callbacks: RoomRuntimeCallbacks
 
   public constructor(
     session: RoomSession,
-    handlers: RoomHubHandlers,
+    callbacks: RoomRuntimeCallbacks,
   ) {
     this.session = session
-    this.handlers = handlers
+    this.callbacks = callbacks
   }
 
   public async start(): Promise<void> {
     this.startCount += 1
-    this.connected = true
+    this.callbacks.onStateChanged({
+      ...initialRoomRuntimeSnapshot,
+      hubStatus: 'connected',
+    })
   }
 
   public async stop(): Promise<void> {
     this.stopCount += 1
-    this.connected = false
   }
 
-  public async disconnect(): Promise<void> {
-    this.connected = false
-    this.handlers.onDisconnected()
-  }
-
-  public isConnected(): boolean {
-    return this.connected
-  }
-
-  public async sendOffer(): Promise<void> {}
-
-  public async sendAnswer(): Promise<void> {}
-
-  public async sendIceCandidate(): Promise<void> {}
-
-  public async sendScreenShareState(): Promise<void> {}
+  public async startScreenShare(): Promise<void> {}
+  public async stopScreenShare(): Promise<void> {}
+  public restartPeerForDiagnostics(): void {}
+  public async disconnectHubForDiagnostics(): Promise<void> {}
+  public async reconnectHubForDiagnostics(): Promise<void> {}
 }
 
 function deferred<T>() {

@@ -38,6 +38,11 @@ export interface RoomIceCandidate {
   usernameFragment: string | null
 }
 
+export interface RoomWebRtcRecoveryRequested {
+  participantId: string
+  role: ParticipantRole
+}
+
 export interface RoomScreenShareStateChanged {
   participantId: string
   role: 'Host'
@@ -64,6 +69,7 @@ export const roomHubEvents = {
   webRtcOffer: 'RoomWebRtcOffer',
   webRtcAnswer: 'RoomWebRtcAnswer',
   iceCandidate: 'RoomIceCandidate',
+  webRtcRecoveryRequested: 'RoomWebRtcRecoveryRequested',
   screenShareStateChanged: 'RoomScreenShareStateChanged',
 } as const
 
@@ -71,5 +77,6 @@ export const roomHubMethods = {
   sendWebRtcOffer: 'SendWebRtcOffer',
   sendWebRtcAnswer: 'SendWebRtcAnswer',
   sendIceCandidate: 'SendIceCandidate',
+  requestWebRtcRecovery: 'RequestWebRtcRecovery',
   sendScreenShareState: 'SendScreenShareState',
 } as const

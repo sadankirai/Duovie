@@ -18,6 +18,10 @@ public sealed record RoomIceCandidate(
     int? SdpMLineIndex,
     string? UsernameFragment);
 
+public sealed record RoomWebRtcRecoveryRequested(
+    Guid ParticipantId,
+    string Role);
+
 public static class RoomWebRtcSignalingRules
 {
     public const int MaximumSdpLength = 16 * 1024;
@@ -26,4 +30,3 @@ public static class RoomWebRtcSignalingRules
     public const int MaximumUsernameFragmentLength = 256;
     public const string InvalidSignalError = "WebRTC signaling request is invalid.";
 }
-

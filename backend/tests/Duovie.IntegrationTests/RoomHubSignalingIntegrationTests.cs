@@ -110,6 +110,82 @@ public sealed class RoomHubSignalingIntegrationTests(PostgreSqlFixture fixture)
     }
 
     [Fact]
+    public async Task Peer_recovery_requests_reach_only_the_opposite_role_in_the_same_Room()
+    {
+        using var factory = new PostgreSqlDuovieApiFactory(fixture.ConnectionString);
+        using var client = CreateHttpClient(factory);
+        var firstHostSession = await CreateRoomAsync(client);
+        var firstGuestSession = await JoinRoomAsync(client, firstHostSession.RoomId);
+        var secondHostSession = await CreateRoomAsync(client);
+        var secondGuestSession = await JoinRoomAsync(client, secondHostSession.RoomId);
+        await using var firstHost = CreateHubConnection(factory, firstHostSession);
+        await using var duplicateFirstHost = CreateHubConnection(factory, firstHostSession);
+        await using var firstGuest = CreateHubConnection(factory, firstGuestSession);
+        await using var duplicateFirstGuest = CreateHubConnection(factory, firstGuestSession);
+        await using var secondHost = CreateHubConnection(factory, secondHostSession);
+        await using var secondGuest = CreateHubConnection(factory, secondGuestSession);
+        var firstHostRequest = Capture<RoomWebRtcRecoveryRequested>(
+            firstHost,
+            RoomWebRtcEvents.RecoveryRequested);
+        var duplicateFirstHostRequest = Capture<RoomWebRtcRecoveryRequested>(
+            duplicateFirstHost,
+            RoomWebRtcEvents.RecoveryRequested);
+        var firstGuestRequest = Capture<RoomWebRtcRecoveryRequested>(
+            firstGuest,
+            RoomWebRtcEvents.RecoveryRequested);
+        var duplicateFirstGuestRequest = Capture<RoomWebRtcRecoveryRequested>(
+            duplicateFirstGuest,
+            RoomWebRtcEvents.RecoveryRequested);
+        var secondHostRequest = Capture<RoomWebRtcRecoveryRequested>(
+            secondHost,
+            RoomWebRtcEvents.RecoveryRequested);
+        var secondGuestRequest = Capture<RoomWebRtcRecoveryRequested>(
+            secondGuest,
+            RoomWebRtcEvents.RecoveryRequested);
+
+        await StartAndReceiveSnapshotAsync(firstHost);
+        await StartAndReceiveSnapshotAsync(duplicateFirstHost);
+        await StartAndReceiveSnapshotAsync(firstGuest);
+        await StartAndReceiveSnapshotAsync(duplicateFirstGuest);
+        await StartAndReceiveSnapshotAsync(secondHost);
+        await StartAndReceiveSnapshotAsync(secondGuest);
+
+        await firstGuest.InvokeAsync(nameof(RoomHub.RequestWebRtcRecovery));
+
+        var guestRequest = await firstHostRequest.Task.WaitAsync(EventTimeout);
+        Assert.Equal(guestRequest, await duplicateFirstHostRequest.Task.WaitAsync(EventTimeout));
+        AssertRecoveryRequest(
+            guestRequest,
+            firstGuestSession,
+            firstHostSession.Credential,
+            secondHostSession.Credential,
+            secondGuestSession.Credential);
+        await AssertNoSignalAsync(firstGuestRequest);
+        await AssertNoSignalAsync(duplicateFirstGuestRequest);
+        await AssertNoSignalAsync(secondHostRequest);
+        await AssertNoSignalAsync(secondGuestRequest);
+
+        var hostRequest = Capture<RoomWebRtcRecoveryRequested>(
+            firstGuest,
+            RoomWebRtcEvents.RecoveryRequested);
+        var duplicateHostRequest = Capture<RoomWebRtcRecoveryRequested>(
+            duplicateFirstGuest,
+            RoomWebRtcEvents.RecoveryRequested);
+        var hostReflection = Capture<RoomWebRtcRecoveryRequested>(
+            duplicateFirstHost,
+            RoomWebRtcEvents.RecoveryRequested);
+        await firstHost.InvokeAsync(nameof(RoomHub.RequestWebRtcRecovery));
+
+        var relayedHostRequest = await hostRequest.Task.WaitAsync(EventTimeout);
+        Assert.Equal(relayedHostRequest, await duplicateHostRequest.Task.WaitAsync(EventTimeout));
+        AssertRecoveryRequest(
+            relayedHostRequest,
+            firstHostSession,
+            firstGuestSession.Credential);
+        await AssertNoSignalAsync(hostReflection);
+    }
+
+    [Fact]
     public async Task Screen_share_active_and_inactive_reach_every_Guest_connection_without_Host_reflection()
     {
         using var factory = new PostgreSqlDuovieApiFactory(fixture.ConnectionString);
@@ -340,6 +416,7 @@ public sealed class RoomHubSignalingIntegrationTests(PostgreSqlFixture fixture)
             ("sdpMid", typeof(string)),
             ("sdpMLineIndex", typeof(int?)),
             ("usernameFragment", typeof(string)));
+        AssertMethodParameters(nameof(RoomHub.RequestWebRtcRecovery));
         AssertMethodParameters(
             nameof(RoomHub.SendScreenShareState),
             ("active", typeof(bool)));
@@ -656,6 +733,19 @@ public sealed class RoomHubSignalingIntegrationTests(PostgreSqlFixture fixture)
         AssertPayload(
             state,
             ["Active", "ParticipantId", "Role"],
+            [sender.Credential, .. otherCredentials]);
+    }
+
+    private static void AssertRecoveryRequest(
+        RoomWebRtcRecoveryRequested request,
+        RoomSession sender,
+        params string[] otherCredentials)
+    {
+        Assert.Equal(sender.ParticipantId, request.ParticipantId);
+        Assert.Equal(sender.Role, request.Role);
+        AssertPayload(
+            request,
+            ["ParticipantId", "Role"],
             [sender.Credential, .. otherCredentials]);
     }
 
