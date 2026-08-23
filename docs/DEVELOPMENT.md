@@ -52,6 +52,25 @@ The authenticated Room Hub also relays ephemeral WebRTC signaling: the Host send
 
 Each reconnect is a new authenticated Hub connection: the client resubmits the Room Id and participant credential, and the server revalidates the session and Room before restoring trusted identity, groups, presence, and a fresh snapshot. The final live connection disconnecting emits offline immediately; another live duplicate prevents a false offline transition, and no reconnect grace timer is used. Established connections are not continuously revalidated as time advances, but reconnect fails after session expiry or Room closure/expiry. Chat and signaling remain ephemeral and are never replayed after reconnect.
 
+## Stage 4.1 peer development harness
+
+Start PostgreSQL and the API as described above with the `https` launch profile. The repository uses `https://127.0.0.1:7245` for this local profile. In another terminal, start Vite so its same-origin development proxy can forward both HTTP API traffic and Room Hub WebSockets. The proxy accepts only the local development certificate; this does not alter production TLS behavior. If that port is unavailable, override both the API launch URL and the proxy's `DUOVIE_API_ORIGIN` locally.
+
+```sh
+dotnet run --project backend/src/Duovie.Api --launch-profile https
+```
+
+```sh
+cd frontend
+npm run dev
+```
+
+Open `/dev/peer` in two current desktop browser tabs. In the Host tab, create a Room and copy only its displayed Room ID. In the Guest tab, enter that Room ID and join. Both actions connect their server-issued participant session to the Room Hub; the opaque participant credential is held in memory only and disappears on reset, teardown, or refresh. It is never displayed or copied.
+
+After both roles show online, the Host can select **Start P2P**. The Host creates one trackless, `sendonly` video transceiver and a real browser Offer; the Guest applies it and creates the Answer; and both browsers relay real ICE candidates through SignalR. The status panel distinguishes Hub connectivity from WebRTC connection, ICE, gathering, and signaling state. Reset closes the peer and Hub and clears the in-memory session.
+
+This harness proves only the trackless peer transport foundation. It does not request camera, microphone, or screen permission and carries no media. `iceServers` is intentionally empty, so same-machine connectivity is the Task 4.1 target; STUN/TURN and NAT reliability belong to Stage 6.
+
 ## Database migrations
 
 Restore the repository-pinned EF Core tool before creating or applying migrations:

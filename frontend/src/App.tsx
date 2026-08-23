@@ -1,6 +1,11 @@
 import './App.css'
+import { PeerDevelopmentHarness } from './features/peer/PeerDevelopmentHarness'
 
 function App() {
+  if (window.location.pathname === '/dev/peer') {
+    return <PeerDevelopmentHarness />
+  }
+
   return (
     <main className="app-shell">
       <section aria-labelledby="duovie-title">
