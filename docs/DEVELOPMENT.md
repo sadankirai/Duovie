@@ -64,7 +64,19 @@ Create and Join accept no participant identity, role, or credential input. Their
 
 On the frontend, `RoomRuntime` fetches this configuration once per participant session (before the Hub connects, so no race with early presence events) and keeps it only in memory; it is never written to `sessionStorage`/`localStorage`, matching the participant-credential-only storage policy below. A fetch failure falls back to an empty/baseline `iceServers` list rather than blocking the Room session, and shows a generic diagnostic notice with no provider detail. Every fresh peer—initial negotiation, offer handling, and bounded automatic recovery—reuses that same in-memory list; a page refresh or full `RoomRuntime` replacement fetches fresh configuration the same way it re-validates the participant session.
 
-Real different-network/different-device TURN acceptance (confirming a relay candidate is actually selected under forced or restrictive conditions) is a separate, later manual milestone and has not been performed as part of this foundation task.
+### Development-only forced-relay acceptance (Stage 6.2)
+
+To prove real Cloudflare TURN relay connectivity locally (not just credential issuance), start the frontend dev server with:
+
+```sh
+VITE_DUOVIE_DEV_ICE_TRANSPORT_POLICY=relay npm run dev
+```
+
+against a backend with real Cloudflare TURN configured (`CloudflareTurn__Enabled=true` and valid `KeyId`/`ApiToken`). This is honored only when `import.meta.env.DEV` is true — `resolveDevIceTransportPolicy` checks the literal `import.meta.env.DEV` expression at its call site, so Vite's build-mode replacement makes the check a hardcoded `false` in any production build; `npm run build`/`vite preview` ignore this variable even if it is set, which has been verified by inspecting the compiled production bundle directly. There is no query-string, Room URL, sessionStorage/localStorage, or UI switch for it, and it changes no participant authority and no peer/Hub recovery behavior — it only adds `iceTransportPolicy: "relay"` to the same `RTCPeerConnection` configuration `iceServers` already flow through.
+
+A same-machine acceptance run using this seam passed: forcing `iceTransportPolicy: "relay"` produced `connected`/`connected`/`stable` peer states with a succeeded relay↔relay candidate pair over `turn:turn.cloudflare.com:3478?transport=udp` carrying real traffic; additional TURN/TCP and TURNS/443 relay candidates were also gathered as fallback transports. A `stun:*:53` attempt timed out (Chrome error 701/binding timeout); this is expected and not a TURN failure, since the primary UDP/3478 relay path succeeded and port 53 is not required. Combined with earlier normal-mode (`iceTransportPolicy: "all"`) proof of direct P2P, both the direct-P2P path and the real Cloudflare TURN relay path are now evidenced. Production always uses `"all"` with direct P2P preferred and TURN as fallback only.
+
+Real cross-network/different-device TURN acceptance — one participant on ordinary Wi-Fi and the other on a separately networked connection such as cellular/mobile hotspot, using normal production-style `iceTransportPolicy: "all"` with automatic direct-or-TURN selection, confirming Host screen video actually reaches the Guest — is a separate, still-outstanding manual milestone. The same-machine forced-relay check above proves the TURN service and relay path work but is not a substitute for it.
 
 ## Room realtime presence
 

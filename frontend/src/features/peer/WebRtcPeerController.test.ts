@@ -33,7 +33,7 @@ describe('WebRtcPeerController', () => {
 
     await fixture.controller.startHostNegotiation(true)
 
-    expect(fixture.configurations).toEqual([{ iceServers: [] }])
+    expect(fixture.configurations).toEqual([{ iceServers: [], iceTransportPolicy: 'all' }])
     expect(transceiverStates(fixture.peer)).toEqual([
       { kind: 'video', direction: 'sendonly', track: null },
     ])
@@ -60,13 +60,22 @@ describe('WebRtcPeerController', () => {
 
     await host.controller.startHostNegotiation(true)
 
-    expect(host.configurations).toEqual([{ iceServers }])
+    expect(host.configurations).toEqual([{ iceServers, iceTransportPolicy: 'all' }])
 
     const guest = createFixture('Guest', iceServers)
 
     await guest.controller.handleOffer(offer(browserOfferSdp))
 
-    expect(guest.configurations).toEqual([{ iceServers }])
+    expect(guest.configurations).toEqual([{ iceServers, iceTransportPolicy: 'all' }])
+  })
+
+  it('passes an explicit non-default iceTransportPolicy to a new RTCPeerConnection', async () => {
+    const iceServers: RTCIceServer[] = [{ urls: ['turn:turn.example.com:3478'] }]
+    const fixture = createFixture('Host', iceServers, 'relay')
+
+    await fixture.controller.startHostNegotiation(true)
+
+    expect(fixture.configurations).toEqual([{ iceServers, iceTransportPolicy: 'relay' }])
   })
 
   it('checks role, Hub connectivity, and Guest presence before creating a peer', async () => {
@@ -825,7 +834,11 @@ describe('WebRtcPeerController', () => {
   })
 })
 
-function createFixture(role: ParticipantRole, iceServers: RTCIceServer[] = []) {
+function createFixture(
+  role: ParticipantRole,
+  iceServers: RTCIceServer[] = [],
+  iceTransportPolicy: RTCIceTransportPolicy = 'all',
+) {
   const signaling = new FakePeerSignaling()
   const configurations: RTCConfiguration[] = []
   const statuses: PeerConnectionStatus[] = []
@@ -871,6 +884,7 @@ function createFixture(role: ParticipantRole, iceServers: RTCIceServer[] = []) {
       },
     },
     iceServers,
+    iceTransportPolicy,
     factory,
     displayMediaProvider,
     remoteMediaStreamFactory,

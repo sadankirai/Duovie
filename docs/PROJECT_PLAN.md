@@ -74,9 +74,29 @@ credentials from a server-only long-lived secret, the participant-authenticated
 `GET /api/rooms/{roomId}/ice-servers` endpoint, and RoomRuntime/WebRtcPeerController
 in-memory ICE integration on the frontend. Configured STUN and Cloudflare TURN both stay
 off by default so local development and the Playwright E2E suite never depend on external
-network access. Real cross-network/different-device TURN acceptance (selected candidate
-type, forced-relay validation) has not been performed and is deferred to a separate manual
-milestone; Stage 6 is not complete until that acceptance happens.
+network access.
+
+Task 6.2 added a development/test-only `iceTransportPolicy: "relay"` seam
+(`VITE_DUOVIE_DEV_ICE_TRANSPORT_POLICY=relay`, honored only when `import.meta.env.DEV` is
+true; production builds provably ignore it — verified by inspecting the built bundle) and
+used it for a real, same-machine, manually run Cloudflare TURN relay acceptance check:
+`RTCPeerConnection` was forced to `iceTransportPolicy: "relay"`, and Chrome's WebRTC
+internals showed a succeeded relay↔relay candidate pair over `turn:turn.cloudflare.com:3478?transport=udp`
+carrying real traffic (~15.4 MB observed), with additional TURN/TCP and TURNS/443 relay
+candidates also gathered as fallback transports. A `stun:*:53` attempt timed out (Chrome
+error 701); this is expected and not a TURN failure, since the primary TURN/UDP/3478 relay
+path succeeded. Earlier normal (`iceTransportPolicy: "all"`) testing separately proved
+direct host-to-host P2P. Together these show both the direct-P2P path and the real
+Cloudflare TURN relay path work; production remains `iceTransportPolicy: "all"` with direct
+P2P preferred and TURN as fallback only.
+
+Real cross-network/different-device acceptance — one participant on ordinary Wi-Fi and the
+other on a separately networked connection (e.g. cellular/mobile hotspot), using normal
+production-style `iceTransportPolicy: "all"` with automatic direct-or-TURN selection and
+confirming Host screen video actually reaches the Guest — has not yet been performed and
+remains the final Stage 6 acceptance milestone; Stage 6 is not complete until that
+different-device/different-network acceptance happens. The same-machine forced-relay test
+proves the TURN service and relay path work but is not a substitute for it.
 
 **Objective:** make connectivity resilient across networks.  
 **Scope:** STUN, TURN fallback, short-lived server-issued credentials, ICE restart/failure handling, different-network tests.  

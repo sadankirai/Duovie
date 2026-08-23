@@ -482,17 +482,79 @@ describe('RoomRuntime ICE server provisioning', () => {
   })
 })
 
+describe('RoomRuntime development-only forced-relay seam', () => {
+  it('defaults to "all" when no iceTransportPolicy dependency override is given', async () => {
+    const fixture = createFixture(hostSession, [hostPresence, guestPresence])
+
+    await fixture.runtime.start()
+
+    expect(fixture.peerIceTransportPolicies).toEqual(['all'])
+  })
+
+  it('threads an explicit development "relay" policy to the first peer', async () => {
+    const fixture = createFixture(
+      hostSession,
+      [hostPresence, guestPresence],
+      0,
+      [],
+      'relay',
+    )
+
+    await fixture.runtime.start()
+
+    expect(fixture.peerIceTransportPolicies).toEqual(['relay'])
+  })
+
+  it('keeps the same configured policy for a fresh peer during automatic recovery', async () => {
+    vi.useFakeTimers()
+    const fixture = createFixture(
+      hostSession,
+      [hostPresence, guestPresence],
+      0,
+      [],
+      'relay',
+    )
+    await fixture.runtime.start()
+
+    fixture.peers[0].emitRecoveryNeeded()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(fixture.peers).toHaveLength(2)
+    expect(fixture.peerIceTransportPolicies).toEqual(['relay', 'relay'])
+  })
+
+  it('keeps the same configured policy for a fresh peer after automatic Hub reconnect', async () => {
+    vi.useFakeTimers()
+    const fixture = createFixture(
+      hostSession,
+      [hostPresence, guestPresence],
+      0,
+      [],
+      'relay',
+    )
+    await fixture.runtime.start()
+
+    fixture.hub.emitDisconnect()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(fixture.peers).toHaveLength(2)
+    expect(fixture.peerIceTransportPolicies).toEqual(['relay', 'relay'])
+  })
+})
+
 function createFixture(
   session: RoomSession,
   initialPresence: RoomPresenceParticipant[],
   peerStartFailures = 0,
   initialIceServersResult: RTCIceServer[] | Error = [],
+  iceTransportPolicy: RTCIceTransportPolicy = 'all',
 ) {
   const snapshots: RoomRuntimeSnapshot[] = []
   const notices: string[] = []
   const hub = new FakeHub(initialPresence)
   const peers: FakePeer[] = []
   const peerIceServers: (readonly RTCIceServer[])[] = []
+  const peerIceTransportPolicies: RTCIceTransportPolicy[] = []
   let remainingStartFailures = peerStartFailures
   let iceServersRequestCount = 0
   let currentIceServersResult = initialIceServersResult
@@ -501,9 +563,10 @@ function createFixture(
       hub.handlers = handlers
       return hub
     },
-    createPeerController: (role, signaling, callbacks, iceServers) => {
+    createPeerController: (role, signaling, callbacks, iceServers, transportPolicy) => {
       const peer = new FakePeer(role, signaling, callbacks)
       peerIceServers.push(iceServers)
+      peerIceTransportPolicies.push(transportPolicy)
       if (remainingStartFailures > 0) {
         peer.startError = new Error('simulated negotiation failure')
         remainingStartFailures -= 1
@@ -517,6 +580,7 @@ function createFixture(
         ? Promise.reject(currentIceServersResult)
         : Promise.resolve(currentIceServersResult)
     },
+    iceTransportPolicy,
     schedule: (callback, delay) => {
       const timer = window.setTimeout(callback, delay)
       return () => window.clearTimeout(timer)
@@ -539,6 +603,7 @@ function createFixture(
     hub,
     peers,
     peerIceServers,
+    peerIceTransportPolicies,
     notices,
     snapshots,
     setIceServersResult(result: RTCIceServer[] | Error) {

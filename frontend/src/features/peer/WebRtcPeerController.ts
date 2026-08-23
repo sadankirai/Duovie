@@ -84,6 +84,7 @@ export class WebRtcPeerController {
   private readonly signaling: PeerSignaling
   private readonly callbacks: WebRtcPeerCallbacks
   private readonly iceServers: readonly RTCIceServer[]
+  private readonly iceTransportPolicy: RTCIceTransportPolicy
   private readonly peerConnectionFactory: PeerConnectionFactory
   private readonly displayMediaProvider: DisplayMediaProvider
   private readonly remoteMediaStreamFactory: RemoteMediaStreamFactory
@@ -107,6 +108,7 @@ export class WebRtcPeerController {
     signaling: PeerSignaling,
     callbacks: WebRtcPeerCallbacks,
     iceServers: readonly RTCIceServer[] = [],
+    iceTransportPolicy: RTCIceTransportPolicy = 'all',
     peerConnectionFactory: PeerConnectionFactory = (configuration) =>
       new RTCPeerConnection(configuration),
     displayMediaProvider: DisplayMediaProvider = requestDisplayMedia,
@@ -117,6 +119,7 @@ export class WebRtcPeerController {
     this.signaling = signaling
     this.callbacks = callbacks
     this.iceServers = iceServers
+    this.iceTransportPolicy = iceTransportPolicy
     this.peerConnectionFactory = peerConnectionFactory
     this.displayMediaProvider = displayMediaProvider
     this.remoteMediaStreamFactory = remoteMediaStreamFactory
@@ -520,6 +523,7 @@ export class WebRtcPeerController {
   private createPeerConnection(): ActivePeer {
     const peerConnection = this.peerConnectionFactory({
       iceServers: [...this.iceServers],
+      iceTransportPolicy: this.iceTransportPolicy,
     })
     const activePeer = { peerConnection, generation: ++this.nextGeneration }
     const emitStatus = () => {

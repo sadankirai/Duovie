@@ -12,6 +12,7 @@ import {
   type RoomWebRtcRecoveryRequested,
 } from './contracts'
 import { fetchRoomIceServers } from './iceServersApi'
+import { resolveDevIceTransportPolicy } from './iceTransportPolicy'
 import { RoomHubClient, type RoomHubHandlers } from './RoomHubClient'
 import {
   WebRtcPeerController,
@@ -84,8 +85,14 @@ export interface RoomRuntimeDependencies {
     signaling: PeerSignaling,
     callbacks: WebRtcPeerCallbacks,
     iceServers: readonly RTCIceServer[],
+    iceTransportPolicy: RTCIceTransportPolicy,
   ) => RoomPeerRuntime
   fetchIceServers: (session: RoomSession) => Promise<RTCIceServer[]>
+  /**
+   * Always "all" in production; a development/test-only seam may resolve to "relay"
+   * to prove real TURN relay connectivity. See {@link resolveDevIceTransportPolicy}.
+   */
+  iceTransportPolicy: RTCIceTransportPolicy
   schedule: (callback: () => void, delayMilliseconds: number) => CancelScheduledWork
   retryDelaysMilliseconds: readonly number[]
   hubReconnectDelaysMilliseconds: readonly number[]
@@ -113,10 +120,14 @@ export const initialRoomRuntimeSnapshot: RoomRuntimeSnapshot = {
 
 export const defaultRoomRuntimeDependencies: RoomRuntimeDependencies = {
   createHubClient: (session, handlers) => new RoomHubClient(session, handlers),
-  createPeerController: (role, signaling, callbacks, iceServers) =>
-    new WebRtcPeerController(role, signaling, callbacks, iceServers),
+  createPeerController: (role, signaling, callbacks, iceServers, iceTransportPolicy) =>
+    new WebRtcPeerController(role, signaling, callbacks, iceServers, iceTransportPolicy),
   fetchIceServers: (session) =>
     fetchRoomIceServers(session.roomId, session.credential),
+  iceTransportPolicy: resolveDevIceTransportPolicy(
+    import.meta.env.DEV,
+    import.meta.env.VITE_DUOVIE_DEV_ICE_TRANSPORT_POLICY as string | undefined,
+  ),
   schedule: (callback, delayMilliseconds) => {
     const timer = window.setTimeout(callback, delayMilliseconds)
     return () => window.clearTimeout(timer)
@@ -669,6 +680,7 @@ export class RoomRuntime {
       hub,
       callbacks,
       this.iceServers,
+      this.dependencies.iceTransportPolicy,
     )
     this.peer = peer
     this.snapshot.peerStatus = initialPeerConnectionStatus
