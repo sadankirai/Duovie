@@ -19,6 +19,7 @@ public sealed class CloudflareTurnCredentialProvider(
     IOptions<CloudflareTurnOptions> options,
     ILogger<CloudflareTurnCredentialProvider> logger)
 {
+    private const int MaximumEntryCount = 8;
     private const int MaximumUrlCount = 8;
     private const int MaximumUrlLength = 512;
     private const int MaximumCredentialLength = 512;
@@ -63,15 +64,15 @@ public sealed class CloudflareTurnCredentialProvider(
 
             var payload = await response.Content.ReadFromJsonAsync<CloudflareIceServersResponse>(
                 cancellationToken);
-            var descriptor = Validate(payload);
+            var descriptors = Validate(payload);
 
-            if (descriptor is null)
+            if (descriptors is null)
             {
                 _logger.LogWarning("Cloudflare TURN credential response failed validation.");
                 return [];
             }
 
-            return [descriptor];
+            return descriptors;
         }
         catch (Exception exception) when (exception is HttpRequestException or JsonException)
         {
@@ -88,9 +89,32 @@ public sealed class CloudflareTurnCredentialProvider(
         }
     }
 
-    private static IceServerDescriptor? Validate(CloudflareIceServersResponse? response)
+    private static IReadOnlyList<IceServerDescriptor>? Validate(CloudflareIceServersResponse? response)
     {
-        if (response?.IceServers?.Urls is not { Count: > 0 and <= MaximumUrlCount } urls)
+        if (response?.IceServers is not { Count: > 0 and <= MaximumEntryCount } entries)
+        {
+            return null;
+        }
+
+        var descriptors = new List<IceServerDescriptor>(entries.Count);
+
+        foreach (var entry in entries)
+        {
+            var descriptor = ValidateEntry(entry);
+            if (descriptor is null)
+            {
+                return null;
+            }
+
+            descriptors.Add(descriptor);
+        }
+
+        return descriptors;
+    }
+
+    private static IceServerDescriptor? ValidateEntry(CloudflareIceServerEntry? entry)
+    {
+        if (entry?.Urls is not { Count: > 0 and <= MaximumUrlCount } urls)
         {
             return null;
         }
@@ -121,8 +145,6 @@ public sealed class CloudflareTurnCredentialProvider(
 
             validatedUrls.Add(url);
         }
-
-        var entry = response.IceServers;
 
         if (requiresCredential && !HasUsableCredential(entry.Username, entry.Credential))
         {

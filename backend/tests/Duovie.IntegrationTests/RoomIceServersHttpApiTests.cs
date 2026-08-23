@@ -219,11 +219,14 @@ public sealed class RoomIceServersHttpApiTests : IDisposable
             HttpStatusCode.OK,
             """
             {
-              "iceServers": {
-                "urls": ["turn:turn.cloudflare.com:3478?transport=udp"],
-                "username": "short-lived-username",
-                "credential": "short-lived-credential"
-              }
+              "iceServers": [
+                { "urls": ["stun:stun.cloudflare.com:3478", "stun:stun.cloudflare.com:53"] },
+                {
+                  "urls": ["turn:turn.cloudflare.com:3478?transport=udp"],
+                  "username": "short-lived-username",
+                  "credential": "short-lived-credential"
+                }
+              ]
             }
             """));
         using var enabledFactory = new PostgreSqlDuovieApiFactory(
@@ -243,10 +246,16 @@ public sealed class RoomIceServersHttpApiTests : IDisposable
         var body = await ReadIceServersAsync(response);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var iceServer = Assert.Single(body.IceServers);
-        Assert.Equal(["turn:turn.cloudflare.com:3478?transport=udp"], iceServer.Urls);
-        Assert.Equal("short-lived-username", iceServer.Username);
-        Assert.Equal("short-lived-credential", iceServer.Credential);
+        Assert.Equal(2, body.IceServers.Count);
+        var stunEntry = body.IceServers[0];
+        Assert.Equal(
+            ["stun:stun.cloudflare.com:3478", "stun:stun.cloudflare.com:53"],
+            stunEntry.Urls);
+        Assert.Null(stunEntry.Username);
+        var turnEntry = body.IceServers[1];
+        Assert.Equal(["turn:turn.cloudflare.com:3478?transport=udp"], turnEntry.Urls);
+        Assert.Equal("short-lived-username", turnEntry.Username);
+        Assert.Equal("short-lived-credential", turnEntry.Credential);
         Assert.DoesNotContain(apiToken, rawJson, StringComparison.Ordinal);
         Assert.DoesNotContain("test-key-id", rawJson, StringComparison.Ordinal);
         Assert.DoesNotContain(created.Credential, rawJson, StringComparison.Ordinal);

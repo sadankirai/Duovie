@@ -6,7 +6,11 @@ namespace Duovie.Infrastructure.IceServers;
 /// </summary>
 internal sealed class CloudflareIceServersResponse
 {
-    public CloudflareIceServerEntry? IceServers { get; init; }
+    /// <summary>
+    /// Cloudflare returns an array here — typically one STUN-only entry and one TURN/TURNS
+    /// entry with a short-lived username/credential — never a single object.
+    /// </summary>
+    public IReadOnlyList<CloudflareIceServerEntry>? IceServers { get; init; }
 }
 
 internal sealed class CloudflareIceServerEntry

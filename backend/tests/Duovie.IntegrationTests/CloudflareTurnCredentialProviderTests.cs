@@ -51,7 +51,7 @@ public sealed class CloudflareTurnCredentialProviderTests
     }
 
     [Fact]
-    public async Task Valid_provider_response_maps_to_a_provider_neutral_descriptor()
+    public async Task Valid_provider_response_maps_the_exact_real_Cloudflare_shape_to_provider_neutral_descriptors()
     {
         var handler = new FakeHttpMessageHandler(_ =>
             FakeHttpMessageHandler.JsonResponse(HttpStatusCode.OK, ValidResponseJson()));
@@ -59,25 +59,71 @@ public sealed class CloudflareTurnCredentialProviderTests
 
         var result = await provider.GetTurnServersAsync();
 
-        var descriptor = Assert.Single(result);
+        Assert.Equal(2, result.Count);
+        var stunEntry = result[0];
+        Assert.Equal(
+            ["stun:stun.cloudflare.com:3478", "stun:stun.cloudflare.com:53"],
+            stunEntry.Urls);
+        Assert.Null(stunEntry.Username);
+        Assert.Null(stunEntry.Credential);
+
+        var turnEntry = result[1];
         Assert.Equal(
             [
                 "turn:turn.cloudflare.com:3478?transport=udp",
+                "turn:turn.cloudflare.com:53?transport=udp",
                 "turn:turn.cloudflare.com:3478?transport=tcp",
+                "turn:turn.cloudflare.com:80?transport=tcp",
                 "turns:turn.cloudflare.com:5349?transport=tcp",
+                "turns:turn.cloudflare.com:443?transport=tcp",
             ],
-            descriptor.Urls);
-        Assert.Equal("generated-username", descriptor.Username);
-        Assert.Equal("generated-credential", descriptor.Credential);
+            turnEntry.Urls);
+        Assert.Equal("generated-username", turnEntry.Username);
+        Assert.Equal("generated-credential", turnEntry.Credential);
+    }
+
+    [Fact]
+    public async Task A_STUN_only_entry_is_accepted_without_username_or_credential()
+    {
+        var handler = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.JsonResponse(
+            HttpStatusCode.OK,
+            "{\"iceServers\":[{\"urls\":[\"stun:stun.cloudflare.com:3478\"]}]}"));
+        var provider = CreateProvider(handler, enabled: true);
+
+        var result = await provider.GetTurnServersAsync();
+
+        var descriptor = Assert.Single(result);
+        Assert.Equal(["stun:stun.cloudflare.com:3478"], descriptor.Urls);
+        Assert.Null(descriptor.Username);
+        Assert.Null(descriptor.Credential);
+    }
+
+    [Fact]
+    public async Task A_TURN_entry_without_username_and_credential_is_rejected()
+    {
+        var handler = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.JsonResponse(
+            HttpStatusCode.OK,
+            "{\"iceServers\":[{\"urls\":[\"turn:turn.cloudflare.com:3478\"]}]}"));
+        var provider = CreateProvider(handler, enabled: true);
+
+        var result = await provider.GetTurnServersAsync();
+
+        Assert.Empty(result);
     }
 
     [Theory]
     [InlineData("{}")]
     [InlineData("{\"iceServers\":null}")]
-    [InlineData("{\"iceServers\":{\"urls\":[]}}")]
-    [InlineData("{\"iceServers\":{\"urls\":[\"not-a-valid-scheme:1.2.3.4\"]}}")]
-    [InlineData("{\"iceServers\":{\"urls\":[\"turn:turn.cloudflare.com:3478\"]}}")]
-    [InlineData("{\"iceServers\":{\"urls\":[\"turn:turn.cloudflare.com:3478\"],\"username\":\"u\"}}")]
+    [InlineData("{\"iceServers\":[]}")]
+    // The old (incorrect) single-object shape must now be rejected as malformed, not
+    // silently accepted — Cloudflare's real response is an array.
+    [InlineData("{\"iceServers\":{\"urls\":[\"stun:stun.cloudflare.com:3478\"]}}")]
+    [InlineData("{\"iceServers\":[null]}")]
+    [InlineData("{\"iceServers\":[{\"urls\":[]}]}")]
+    [InlineData("{\"iceServers\":[{\"urls\":[\"not-a-valid-scheme:1.2.3.4\"]}]}")]
+    [InlineData("{\"iceServers\":[{\"urls\":[\"turn:turn.cloudflare.com:3478\"]}]}")]
+    [InlineData("{\"iceServers\":[{\"urls\":[\"turn:turn.cloudflare.com:3478\"],\"username\":\"u\"}]}")]
+    [InlineData("{\"iceServers\":[{\"urls\":[\"stun:stun.cloudflare.com:3478\"]},{\"urls\":[\"turn:turn.cloudflare.com:3478\"]}]}")]
     [InlineData("not-json-at-all")]
     public async Task Malformed_provider_response_is_handled_safely(string rawJson)
     {
@@ -210,19 +256,36 @@ public sealed class CloudflareTurnCredentialProviderTests
             logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<CloudflareTurnCredentialProvider>.Instance);
     }
 
+    /// <summary>
+    /// The exact real Cloudflare Realtime TURN "generate-ice-servers" response shape:
+    /// an array of one STUN-only entry and one TURN/TURNS entry with a short-lived
+    /// username/credential, mirroring production evidence — not the incorrect single
+    /// object this DTO used to assume.
+    /// </summary>
     private static string ValidResponseJson()
     {
         return """
             {
-              "iceServers": {
-                "urls": [
-                  "turn:turn.cloudflare.com:3478?transport=udp",
-                  "turn:turn.cloudflare.com:3478?transport=tcp",
-                  "turns:turn.cloudflare.com:5349?transport=tcp"
-                ],
-                "username": "generated-username",
-                "credential": "generated-credential"
-              }
+              "iceServers": [
+                {
+                  "urls": [
+                    "stun:stun.cloudflare.com:3478",
+                    "stun:stun.cloudflare.com:53"
+                  ]
+                },
+                {
+                  "urls": [
+                    "turn:turn.cloudflare.com:3478?transport=udp",
+                    "turn:turn.cloudflare.com:53?transport=udp",
+                    "turn:turn.cloudflare.com:3478?transport=tcp",
+                    "turn:turn.cloudflare.com:80?transport=tcp",
+                    "turns:turn.cloudflare.com:5349?transport=tcp",
+                    "turns:turn.cloudflare.com:443?transport=tcp"
+                  ],
+                  "username": "generated-username",
+                  "credential": "generated-credential"
+                }
+              ]
             }
             """;
     }
