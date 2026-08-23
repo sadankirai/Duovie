@@ -114,6 +114,26 @@
   margin: 0;
 }
 
+.peer-remote-video {
+  margin-top: 1rem;
+}
+
+.peer-remote-video video {
+  aspect-ratio: 16 / 9;
+  background: #111827;
+  display: block;
+  max-width: 100%;
+  width: 100%;
+}
+
+.peer-remote-video video[hidden] {
+  display: none;
+}
+
+.peer-remote-video p {
+  margin-top: 0.75rem;
+}
+
 .peer-actions {
   display: flex;
   gap: 1rem;

@@ -3,14 +3,19 @@ import type {
   ParticipantRole,
   PeerConnectionStatus,
   RoomIceCandidate,
+  RoomScreenShareStateChanged,
   RoomWebRtcAnswer,
   RoomWebRtcOffer,
 } from './contracts'
 import {
   WebRtcPeerController,
+  type DisplayMediaProvider,
   type PeerConnectionFactory,
   type PeerRecoveryReason,
   type PeerSignaling,
+  type RemoteMediaStreamFactory,
+  type RemoteVideoState,
+  type ScreenShareState,
 } from './WebRtcPeerController'
 
 const browserOfferSdp = 'v=0\r\ns=browser offer\r\n'
@@ -29,7 +34,7 @@ describe('WebRtcPeerController', () => {
     await fixture.controller.startHostNegotiation(true)
 
     expect(fixture.configurations).toEqual([{ iceServers: [] }])
-    expect(fixture.peer.transceivers).toEqual([
+    expect(transceiverStates(fixture.peer)).toEqual([
       { kind: 'video', direction: 'sendonly', track: null },
     ])
     expect(fixture.peer.localDescriptions).toEqual([
@@ -176,7 +181,7 @@ describe('WebRtcPeerController', () => {
 
     expect(fixture.peers).toHaveLength(2)
     expect(fixture.peers[1]).not.toBe(fixture.peers[0])
-    expect(fixture.peers[1].transceivers).toEqual([
+    expect(transceiverStates(fixture.peers[1])).toEqual([
       { kind: 'video', direction: 'sendonly', track: null },
     ])
     expect(fixture.controller.requiresResetBeforeRetry).toBe(false)
@@ -388,6 +393,418 @@ describe('WebRtcPeerController', () => {
       'controller is closed',
     )
   })
+
+  it('enforces Host role and peer readiness before requesting display capture', async () => {
+    const guest = createFixture('Guest')
+    const hostWithoutPeer = createFixture('Host')
+    const hostWithUnreadyPeer = createFixture('Host')
+
+    await guest.controller.handleOffer(offer(browserOfferSdp))
+    await expect(guest.controller.startScreenShare()).rejects.toThrow('Only the Host')
+    await expect(hostWithoutPeer.controller.startScreenShare()).rejects.toThrow(
+      'connected Host peer',
+    )
+    await hostWithUnreadyPeer.controller.startHostNegotiation(true)
+    await hostWithUnreadyPeer.controller.handleAnswer(answer(browserAnswerSdp))
+    await expect(hostWithUnreadyPeer.controller.startScreenShare()).rejects.toThrow(
+      'stable connected Host peer',
+    )
+
+    expect(guest.displayMediaProvider).not.toHaveBeenCalled()
+    expect(hostWithoutPeer.displayMediaProvider).not.toHaveBeenCalled()
+    expect(hostWithUnreadyPeer.displayMediaProvider).not.toHaveBeenCalled()
+  })
+
+  it('attaches exact display video to the existing sender without renegotiation or audio', async () => {
+    const fixture = createFixture('Host')
+    const videoTrack = fakeTrack('video')
+    const unexpectedAudioTrack = fakeTrack('audio')
+    fixture.displayMediaProvider.mockResolvedValueOnce(
+      fakeStream(videoTrack, unexpectedAudioTrack),
+    )
+    await establishConnectedHost(fixture)
+    const existingPeer = fixture.peer
+    const existingSender = hostSender(existingPeer)
+    const offerCount = fixture.signaling.offers.length
+    const localDescriptionCount = existingPeer.localDescriptions.length
+    expect(fixture.displayMediaProvider).not.toHaveBeenCalled()
+
+    await fixture.controller.startScreenShare()
+
+    expect(fixture.displayMediaProvider).toHaveBeenCalledTimes(1)
+    expect(fixture.displayMediaProvider).toHaveBeenCalledWith({
+      video: true,
+      audio: false,
+    })
+    expect(fixture.peers).toEqual([existingPeer])
+    expect(transceiverStates(existingPeer)).toEqual([
+      { kind: 'video', direction: 'sendonly', track: videoTrack },
+    ])
+    expect(existingSender.replaceTrackCalls).toEqual([videoTrack])
+    expect(existingSender.track).toBe(videoTrack)
+    expect(unexpectedAudioTrack.stopCount).toBe(1)
+    expect(fixture.controller.screenShareState).toBe('active')
+    expect(fixture.screenShareStates).toEqual(['requesting', 'active'])
+    expect(fixture.signaling.screenShareStateCalls).toEqual([true])
+    expect(fixture.signaling.offers).toHaveLength(offerCount)
+    expect(fixture.signaling.answers).toHaveLength(0)
+    expect(existingPeer.localDescriptions).toHaveLength(localDescriptionCount)
+  })
+
+  it('prevents concurrent capture requests and invalidates a pending request on stop', async () => {
+    const fixture = createFixture('Host')
+    const permission = deferred<MediaStream>()
+    const lateTrack = fakeTrack()
+    fixture.displayMediaProvider.mockReturnValueOnce(permission.promise)
+    await establishConnectedHost(fixture)
+
+    const firstAttempt = fixture.controller.startScreenShare()
+    await vi.waitFor(() => expect(fixture.controller.screenShareState).toBe('requesting'))
+
+    await expect(fixture.controller.startScreenShare()).rejects.toThrow('already active')
+    expect(fixture.displayMediaProvider).toHaveBeenCalledTimes(1)
+
+    await fixture.controller.stopScreenShare()
+    expect(fixture.controller.hasPendingDisplayCaptureRequest).toBe(true)
+    await expect(fixture.controller.startScreenShare()).rejects.toThrow(
+      'already active or requesting permission',
+    )
+    expect(fixture.displayMediaProvider).toHaveBeenCalledTimes(1)
+    permission.resolve(fakeStream(lateTrack))
+
+    await expect(firstAttempt).rejects.toThrow('Screen capture could not be started')
+    expect(fixture.controller.hasPendingDisplayCaptureRequest).toBe(false)
+    expect(lateTrack.stopCount).toBe(1)
+    expect(hostSender(fixture.peer).replaceTrackCalls).toHaveLength(0)
+    expect(fixture.controller.screenShareState).toBe('inactive')
+    expect(fixture.controller.hasActivePeer).toBe(true)
+    expect(fixture.signaling.screenShareStateCalls).toHaveLength(0)
+  })
+
+  it('keeps the peer retryable after picker cancellation without exposing browser details', async () => {
+    const fixture = createFixture('Host')
+    const retryTrack = fakeTrack()
+    fixture.displayMediaProvider
+      .mockRejectedValueOnce(new Error('private browser permission detail'))
+      .mockResolvedValueOnce(fakeStream(retryTrack))
+    await establishConnectedHost(fixture)
+
+    const cancelledAttempt = fixture.controller.startScreenShare()
+
+    await expect(cancelledAttempt).rejects.toThrow('Screen capture could not be started')
+    await expect(cancelledAttempt).rejects.not.toThrow('private browser permission detail')
+    expect(fixture.controller.hasActivePeer).toBe(true)
+    expect(fixture.controller.requiresResetBeforeRetry).toBe(false)
+    expect(fixture.controller.screenShareState).toBe('inactive')
+    expect(fixture.signaling.screenShareStateCalls).toHaveLength(0)
+
+    await fixture.controller.startScreenShare()
+
+    expect(fixture.displayMediaProvider).toHaveBeenCalledTimes(2)
+    expect(hostSender(fixture.peer).track).toBe(retryTrack)
+    expect(fixture.controller.screenShareState).toBe('active')
+    expect(fixture.signaling.screenShareStateCalls).toEqual([true])
+  })
+
+  it('stops unusable acquired tracks and allows a fresh capture attempt', async () => {
+    const fixture = createFixture('Host')
+    const audioTrack = fakeTrack('audio')
+    const retryTrack = fakeTrack()
+    fixture.displayMediaProvider
+      .mockResolvedValueOnce(fakeStream(audioTrack))
+      .mockResolvedValueOnce(fakeStream(retryTrack))
+    await establishConnectedHost(fixture)
+
+    await expect(fixture.controller.startScreenShare()).rejects.toThrow(
+      'Screen capture could not be started',
+    )
+
+    expect(audioTrack.stopCount).toBe(1)
+    expect(hostSender(fixture.peer).track).toBeNull()
+    expect(fixture.controller.hasActivePeer).toBe(true)
+    expect(fixture.signaling.screenShareStateCalls).toHaveLength(0)
+
+    await fixture.controller.startScreenShare()
+
+    expect(hostSender(fixture.peer).track).toBe(retryTrack)
+    expect(fixture.signaling.screenShareStateCalls).toEqual([true])
+  })
+
+  it('stops a track after replaceTrack failure while preserving a retryable peer', async () => {
+    const fixture = createFixture('Host')
+    const failedTrack = fakeTrack()
+    const retryTrack = fakeTrack()
+    fixture.displayMediaProvider
+      .mockResolvedValueOnce(fakeStream(failedTrack))
+      .mockResolvedValueOnce(fakeStream(retryTrack))
+    await establishConnectedHost(fixture)
+    const sender = hostSender(fixture.peer)
+    sender.replaceTrackError = new Error('private sender failure')
+
+    const failedAttempt = fixture.controller.startScreenShare()
+
+    await expect(failedAttempt).rejects.toThrow('Screen capture could not be started')
+    await expect(failedAttempt).rejects.not.toThrow('private sender failure')
+    expect(failedTrack.stopCount).toBe(1)
+    expect(sender.track).toBeNull()
+    expect(fixture.controller.hasActivePeer).toBe(true)
+    expect(fixture.controller.requiresResetBeforeRetry).toBe(false)
+    expect(fixture.controller.screenShareState).toBe('inactive')
+    expect(fixture.signaling.screenShareStateCalls).toHaveLength(0)
+
+    sender.replaceTrackError = null
+    await fixture.controller.startScreenShare()
+
+    expect(sender.track).toBe(retryTrack)
+    expect(fixture.signaling.screenShareStateCalls).toEqual([true])
+  })
+
+  it('rolls back capture safely when the active share-state signal fails', async () => {
+    const fixture = createFixture('Host')
+    const videoTrack = fakeTrack()
+    fixture.displayMediaProvider.mockResolvedValueOnce(fakeStream(videoTrack))
+    fixture.signaling.screenShareStateError = new Error('private Hub failure')
+    await establishConnectedHost(fixture)
+    const sender = hostSender(fixture.peer)
+
+    const failedAttempt = fixture.controller.startScreenShare()
+
+    await expect(failedAttempt).rejects.toThrow('Screen capture could not be started')
+    await expect(failedAttempt).rejects.not.toThrow('private Hub failure')
+    expect(sender.replaceTrackCalls).toEqual([videoTrack, null])
+    expect(sender.track).toBeNull()
+    expect(videoTrack.stopCount).toBe(1)
+    expect(videoTrack.onended).toBeNull()
+    expect(fixture.controller.screenShareState).toBe('inactive')
+    expect(fixture.controller.hasActivePeer).toBe(true)
+    expect(fixture.controller.requiresResetBeforeRetry).toBe(false)
+    expect(fixture.signaling.screenShareStateCalls).toEqual([true, false])
+  })
+
+  it('explicitly stops sharing, detaches the sender, and remains idempotent', async () => {
+    const fixture = createFixture('Host')
+    const videoTrack = fakeTrack()
+    fixture.displayMediaProvider.mockResolvedValueOnce(fakeStream(videoTrack))
+    await establishConnectedHost(fixture)
+    await fixture.controller.startScreenShare()
+    const sender = hostSender(fixture.peer)
+
+    await fixture.controller.stopScreenShare()
+    await fixture.controller.stopScreenShare()
+
+    expect(sender.replaceTrackCalls).toEqual([videoTrack, null])
+    expect(sender.track).toBeNull()
+    expect(videoTrack.stopCount).toBe(1)
+    expect(videoTrack.onended).toBeNull()
+    expect(fixture.controller.screenShareState).toBe('inactive')
+    expect(fixture.controller.hasActivePeer).toBe(true)
+    expect(fixture.peer.closed).toBe(false)
+    expect(fixture.signaling.screenShareStateCalls).toEqual([true, false])
+  })
+
+  it('handles browser-native track end without letting an old ended callback affect a new share', async () => {
+    const fixture = createFixture('Host')
+    const firstTrack = fakeTrack()
+    const secondTrack = fakeTrack()
+    fixture.displayMediaProvider
+      .mockResolvedValueOnce(fakeStream(firstTrack))
+      .mockResolvedValueOnce(fakeStream(secondTrack))
+    await establishConnectedHost(fixture)
+    await fixture.controller.startScreenShare()
+    const staleEndedHandler = firstTrack.onended
+
+    await fixture.controller.stopScreenShare()
+    await fixture.controller.startScreenShare()
+    staleEndedHandler?.call(firstTrack as unknown as MediaStreamTrack, new Event('ended'))
+
+    expect(hostSender(fixture.peer).track).toBe(secondTrack)
+    expect(secondTrack.stopCount).toBe(0)
+    expect(fixture.controller.screenShareState).toBe('active')
+    expect(fixture.signaling.screenShareStateCalls).toEqual([true, false, true])
+
+    secondTrack.emitEnded()
+    await vi.waitFor(() => expect(fixture.controller.screenShareState).toBe('inactive'))
+
+    expect(hostSender(fixture.peer).track).toBeNull()
+    expect(secondTrack.stopCount).toBe(1)
+    expect(fixture.controller.hasActivePeer).toBe(true)
+    expect(fixture.peer.closed).toBe(false)
+    expect(fixture.signaling.screenShareStateCalls).toEqual([
+      true,
+      false,
+      true,
+      false,
+    ])
+  })
+
+  it('stops a late permission result and never attaches it to a replacement generation', async () => {
+    const fixture = createFixture('Host')
+    const permission = deferred<MediaStream>()
+    const staleTrack = fakeTrack()
+    fixture.displayMediaProvider.mockReturnValueOnce(permission.promise)
+    await establishConnectedHost(fixture)
+    const oldPeer = fixture.peer
+    const oldSender = hostSender(oldPeer)
+    const pendingCapture = fixture.controller.startScreenShare()
+    await vi.waitFor(() => expect(fixture.controller.screenShareState).toBe('requesting'))
+
+    fixture.controller.resetPeer()
+    await establishConnectedHost(fixture)
+    const replacementPeer = fixture.peer
+    await expect(fixture.controller.startScreenShare()).rejects.toThrow(
+      'already active or requesting permission',
+    )
+    expect(fixture.displayMediaProvider).toHaveBeenCalledTimes(1)
+    permission.resolve(fakeStream(staleTrack))
+
+    await expect(pendingCapture).rejects.toThrow('Screen capture could not be started')
+    expect(staleTrack.stopCount).toBe(1)
+    expect(oldSender.replaceTrackCalls).toHaveLength(0)
+    expect(hostSender(replacementPeer).replaceTrackCalls).toHaveLength(0)
+    expect(hostSender(replacementPeer).track).toBeNull()
+    expect(fixture.controller.hasActivePeer).toBe(true)
+
+    const currentTrack = fakeTrack()
+    fixture.displayMediaProvider.mockResolvedValueOnce(fakeStream(currentTrack))
+    await fixture.controller.startScreenShare()
+    expect(hostSender(replacementPeer).track).toBe(currentTrack)
+  })
+
+  it.each(['reset', 'close', 'failure'] as const)(
+    'stops active capture during peer %s cleanup',
+    async (cleanup) => {
+      const fixture = createFixture('Host')
+      const track = fakeTrack()
+      fixture.displayMediaProvider.mockResolvedValueOnce(fakeStream(track))
+      await establishConnectedHost(fixture)
+      await fixture.controller.startScreenShare()
+      const peer = fixture.peer
+      const sender = hostSender(peer)
+
+      if (cleanup === 'reset') {
+        fixture.controller.resetPeer()
+      } else if (cleanup === 'close') {
+        fixture.controller.close()
+      } else {
+        peer.emitConnectionState('failed')
+      }
+
+      expect(track.stopCount).toBe(1)
+      expect(sender.replaceTrackCalls).toEqual([track, null])
+      expect(sender.track).toBeNull()
+      expect(fixture.controller.screenShareState).toBe('inactive')
+      expect(peer.closed).toBe(true)
+      expect(fixture.signaling.screenShareStateCalls).toEqual([true, false])
+    },
+  )
+
+  it('wraps a streamless Guest video track and follows mute, unmute, and ended state', async () => {
+    const fixture = createFixture('Guest')
+    const remoteTrack = fakeTrack('video', true)
+    const ignoredAudioTrack = fakeTrack('audio')
+    await fixture.controller.handleOffer(offer(browserOfferSdp))
+
+    fixture.peer.emitRemoteTrack(ignoredAudioTrack as unknown as MediaStreamTrack)
+    fixture.peer.emitRemoteTrack(remoteTrack as unknown as MediaStreamTrack, [])
+
+    expect(fixture.remoteMediaStreamFactory).toHaveBeenCalledTimes(1)
+    expect(fixture.remoteMediaStreamFactory).toHaveBeenCalledWith([
+      remoteTrack as unknown as MediaStreamTrack,
+    ])
+    expect(fixture.remoteVideoChanges.at(-1)).toMatchObject({ state: 'waiting' })
+    expect(fixture.remoteVideoChanges.at(-1)?.stream).not.toBeNull()
+
+    remoteTrack.emitUnmute()
+    expect(fixture.remoteVideoChanges.at(-1)).toMatchObject({ state: 'receiving' })
+
+    remoteTrack.emitMute()
+    expect(fixture.remoteVideoChanges.at(-1)).toMatchObject({ state: 'waiting' })
+
+    remoteTrack.emitEnded()
+    expect(fixture.remoteVideoChanges.at(-1)).toEqual({
+      stream: null,
+      state: 'unavailable',
+    })
+    expect(fixture.controller.hasActivePeer).toBe(true)
+  })
+
+  it('keeps Guest stream ownership separate from trusted Host share activity', async () => {
+    const fixture = createFixture('Guest')
+    const remoteTrack = fakeTrack()
+    await fixture.controller.handleOffer(offer(browserOfferSdp))
+    fixture.peer.emitRemoteTrack(remoteTrack as unknown as MediaStreamTrack, [])
+    const remoteStream = fixture.remoteVideoChanges.at(-1)?.stream
+    const remoteChangeCount = fixture.remoteVideoChanges.length
+
+    fixture.controller.handleScreenShareStateChanged(screenShareState(true))
+
+    expect(fixture.controller.hostScreenShareActive).toBe(true)
+    expect(fixture.hostScreenShareStates).toEqual([true])
+    expect(fixture.remoteVideoChanges).toHaveLength(remoteChangeCount)
+    expect(fixture.remoteVideoChanges.at(-1)?.stream).toBe(remoteStream)
+
+    fixture.controller.handleScreenShareStateChanged(screenShareState(false))
+
+    expect(fixture.controller.hostScreenShareActive).toBe(false)
+    expect(fixture.hostScreenShareStates).toEqual([true, false])
+    expect(fixture.remoteVideoChanges).toHaveLength(remoteChangeCount)
+    expect(fixture.remoteMediaStreamFactory).toHaveBeenCalledTimes(1)
+
+    fixture.controller.handleScreenShareStateChanged(screenShareState(true))
+
+    expect(fixture.controller.hostScreenShareActive).toBe(true)
+    expect(fixture.hostScreenShareStates).toEqual([true, false, true])
+    expect(fixture.remoteVideoChanges.at(-1)?.stream).toBe(remoteStream)
+    expect(fixture.remoteMediaStreamFactory).toHaveBeenCalledTimes(1)
+
+    fixture.controller.resetPeer()
+    fixture.controller.handleScreenShareStateChanged(screenShareState(true))
+
+    expect(fixture.controller.hostScreenShareActive).toBe(false)
+    expect(fixture.hostScreenShareStates).toEqual([true, false, true, false])
+
+    fixture.controller.close()
+    fixture.controller.handleScreenShareStateChanged(screenShareState(true))
+    expect(fixture.hostScreenShareStates).toEqual([true, false, true, false])
+  })
+
+  it('clears Guest media on reset and rejects stale ontrack callbacks from old generations', async () => {
+    const fixture = createFixture('Guest')
+    const firstTrack = fakeTrack()
+    await fixture.controller.handleOffer(offer(browserOfferSdp))
+    const oldPeer = fixture.peer
+    const staleOnTrack = oldPeer.ontrack
+    oldPeer.emitRemoteTrack(firstTrack as unknown as MediaStreamTrack)
+    const staleUnmute = firstTrack.onunmute
+
+    fixture.controller.resetPeer()
+
+    expect(fixture.remoteVideoChanges.at(-1)).toEqual({
+      stream: null,
+      state: 'unavailable',
+    })
+    expect(oldPeer.ontrack).toBeNull()
+
+    await fixture.controller.handleOffer(offer(browserOfferSdp))
+    const replacementPeer = fixture.peer
+    const staleTrack = fakeTrack()
+    staleOnTrack?.call(
+      oldPeer as unknown as RTCPeerConnection,
+      { track: staleTrack, streams: [] } as unknown as RTCTrackEvent,
+    )
+    staleUnmute?.call(firstTrack as unknown as MediaStreamTrack, new Event('unmute'))
+
+    expect(fixture.remoteMediaStreamFactory).toHaveBeenCalledTimes(1)
+    expect(fixture.remoteVideoChanges.at(-1)).toEqual({
+      stream: null,
+      state: 'unavailable',
+    })
+
+    const currentTrack = fakeTrack()
+    replacementPeer.emitRemoteTrack(currentTrack as unknown as MediaStreamTrack)
+    expect(fixture.remoteMediaStreamFactory).toHaveBeenCalledTimes(2)
+    expect(fixture.remoteVideoChanges.at(-1)).toMatchObject({ state: 'receiving' })
+  })
 })
 
 function createFixture(role: ParticipantRole) {
@@ -395,9 +812,20 @@ function createFixture(role: ParticipantRole) {
   const configurations: RTCConfiguration[] = []
   const statuses: PeerConnectionStatus[] = []
   const recoveryReasons: PeerRecoveryReason[] = []
+  const screenShareStates: ScreenShareState[] = []
+  const hostScreenShareStates: boolean[] = []
+  const remoteVideoChanges: Array<{
+    stream: MediaStream | null
+    state: RemoteVideoState
+  }> = []
+  let mediaOperationFailures = 0
   const peers: FakePeerConnection[] = []
   let signalSendFailures = 0
   let nextPeerSetup: ((peer: FakePeerConnection) => void) | null = null
+  const displayMediaProvider = vi.fn<DisplayMediaProvider>()
+  const remoteMediaStreamFactory = vi.fn<RemoteMediaStreamFactory>((tracks) =>
+    new FakeMediaStream(tracks) as unknown as MediaStream,
+  )
   const factory: PeerConnectionFactory = (configuration) => {
     configurations.push(configuration)
     const peer = new FakePeerConnection()
@@ -415,8 +843,18 @@ function createFixture(role: ParticipantRole) {
         signalSendFailures += 1
       },
       onRecoveryNeeded: (reason) => recoveryReasons.push(reason),
+      onScreenShareStateChanged: (state) => screenShareStates.push(state),
+      onRemoteVideoChanged: (stream, state) => {
+        remoteVideoChanges.push({ stream, state })
+      },
+      onHostScreenShareChanged: (active) => hostScreenShareStates.push(active),
+      onMediaOperationFailed: () => {
+        mediaOperationFailures += 1
+      },
     },
     factory,
+    displayMediaProvider,
+    remoteMediaStreamFactory,
   )
 
   return {
@@ -425,6 +863,11 @@ function createFixture(role: ParticipantRole) {
     configurations,
     statuses,
     recoveryReasons,
+    screenShareStates,
+    hostScreenShareStates,
+    remoteVideoChanges,
+    displayMediaProvider,
+    remoteMediaStreamFactory,
     peers,
     get peer() {
       const peer = peers.at(-1)
@@ -437,6 +880,9 @@ function createFixture(role: ParticipantRole) {
     get signalSendFailures() {
       return signalSendFailures
     },
+    get mediaOperationFailures() {
+      return mediaOperationFailures
+    },
     set nextPeerSetup(setup: ((peer: FakePeerConnection) => void) | null) {
       nextPeerSetup = setup
     },
@@ -448,9 +894,11 @@ class FakePeerSignaling implements PeerSignaling {
   public readonly offers: string[] = []
   public readonly answers: string[] = []
   public readonly candidates: RTCIceCandidateInit[] = []
+  public readonly screenShareStateCalls: boolean[] = []
   public offerError: Error | null = null
   public answerError: Error | null = null
   public candidateError: Error | null = null
+  public screenShareStateError: Error | null = null
 
   public isConnected(): boolean {
     return this.connected
@@ -479,6 +927,13 @@ class FakePeerSignaling implements PeerSignaling {
 
     this.candidates.push(candidate)
   }
+
+  public async sendScreenShareState(active: boolean): Promise<void> {
+    this.screenShareStateCalls.push(active)
+    if (this.screenShareStateError !== null) {
+      throw this.screenShareStateError
+    }
+  }
 }
 
 class FakePeerConnection {
@@ -493,10 +948,11 @@ class FakePeerConnection {
   public oniceconnectionstatechange: RTCPeerConnection['oniceconnectionstatechange'] = null
   public onicegatheringstatechange: RTCPeerConnection['onicegatheringstatechange'] = null
   public onsignalingstatechange: RTCPeerConnection['onsignalingstatechange'] = null
+  public ontrack: RTCPeerConnection['ontrack'] = null
   public readonly transceivers: Array<{
     kind: string
     direction: RTCRtpTransceiverDirection
-    track: MediaStreamTrack | null
+    sender: FakeRtpSender
   }> = []
   public readonly localDescriptions: RTCSessionDescriptionInit[] = []
   public readonly remoteDescriptions: RTCSessionDescriptionInit[] = []
@@ -509,11 +965,11 @@ class FakePeerConnection {
   public closeCount = 0
 
   public addTransceiver(kind: string, init: RTCRtpTransceiverInit): RTCRtpTransceiver {
-    const sender = { track: null }
+    const sender = new FakeRtpSender()
     this.transceivers.push({
       kind,
       direction: init.direction ?? 'sendrecv',
-      track: sender.track,
+      sender,
     })
     return { sender } as unknown as RTCRtpTransceiver
   }
@@ -592,6 +1048,114 @@ class FakePeerConnection {
       new Event('iceconnectionstatechange'),
     )
   }
+
+  public emitRemoteTrack(track: MediaStreamTrack, streams: MediaStream[] = []): void {
+    this.ontrack?.call(
+      this as unknown as RTCPeerConnection,
+      { track, streams } as unknown as RTCTrackEvent,
+    )
+  }
+}
+
+class FakeRtpSender {
+  public track: MediaStreamTrack | null = null
+  public readonly replaceTrackCalls: Array<MediaStreamTrack | null> = []
+  public replaceTrackError: Error | null = null
+
+  public async replaceTrack(track: MediaStreamTrack | null): Promise<void> {
+    this.replaceTrackCalls.push(track)
+    if (this.replaceTrackError !== null) {
+      throw this.replaceTrackError
+    }
+
+    this.track = track
+  }
+}
+
+class FakeMediaStream {
+  private readonly tracks: MediaStreamTrack[]
+
+  public constructor(tracks: MediaStreamTrack[]) {
+    this.tracks = tracks
+  }
+
+  public getTracks(): MediaStreamTrack[] {
+    return [...this.tracks]
+  }
+}
+
+class FakeMediaStreamTrack {
+  public readonly kind: 'video' | 'audio'
+  public readyState: MediaStreamTrackState = 'live'
+  public muted: boolean
+  public onended: MediaStreamTrack['onended'] = null
+  public onmute: MediaStreamTrack['onmute'] = null
+  public onunmute: MediaStreamTrack['onunmute'] = null
+  public stopCount = 0
+
+  public constructor(kind: 'video' | 'audio' = 'video', muted = false) {
+    this.kind = kind
+    this.muted = muted
+  }
+
+  public stop(): void {
+    this.stopCount += 1
+    this.readyState = 'ended'
+  }
+
+  public emitEnded(): void {
+    const handler = this.onended
+    this.readyState = 'ended'
+    handler?.call(this as unknown as MediaStreamTrack, new Event('ended'))
+  }
+
+  public emitMute(): void {
+    this.muted = true
+    this.onmute?.call(this as unknown as MediaStreamTrack, new Event('mute'))
+  }
+
+  public emitUnmute(): void {
+    this.muted = false
+    this.onunmute?.call(this as unknown as MediaStreamTrack, new Event('unmute'))
+  }
+}
+
+type TestFixture = ReturnType<typeof createFixture>
+
+async function establishConnectedHost(fixture: TestFixture): Promise<void> {
+  await fixture.controller.startHostNegotiation(true)
+  await fixture.controller.handleAnswer(answer(browserAnswerSdp))
+  fixture.peer.emitConnectionState('connected')
+}
+
+function hostSender(peer: FakePeerConnection): FakeRtpSender {
+  const sender = peer.transceivers[0]?.sender
+  if (sender === undefined) {
+    throw new Error('The test expected the Host video sender to exist.')
+  }
+
+  return sender
+}
+
+function transceiverStates(peer: FakePeerConnection) {
+  return peer.transceivers.map(({ kind, direction, sender }) => ({
+    kind,
+    direction,
+    track: sender.track,
+  }))
+}
+
+function fakeTrack(
+  kind: 'video' | 'audio' = 'video',
+  muted = false,
+): FakeMediaStreamTrack {
+  return new FakeMediaStreamTrack(kind, muted)
+}
+
+function fakeStream(...tracks: FakeMediaStreamTrack[]): MediaStream {
+  return new FakeMediaStream(
+    tracks.map((track) => track as unknown as MediaStreamTrack),
+  ) as unknown as MediaStream
 }
 
 function browserCandidate(candidate: RTCIceCandidateInit): RTCIceCandidate {
@@ -612,6 +1176,10 @@ function offer(sdp: string): RoomWebRtcOffer {
 
 function answer(sdp: string): RoomWebRtcAnswer {
   return { participantId: 'guest-participant', role: 'Guest', sdp }
+}
+
+function screenShareState(active: boolean): RoomScreenShareStateChanged {
+  return { participantId: 'host-participant', role: 'Host', active }
 }
 
 function ice(candidate: string, role: ParticipantRole): RoomIceCandidate {

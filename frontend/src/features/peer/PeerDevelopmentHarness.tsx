@@ -3,6 +3,7 @@ import {
   initialPeerConnectionStatus,
   type PeerConnectionStatus,
   type RoomPresenceParticipant,
+  type RoomScreenShareStateChanged,
   type RoomSession,
 } from './contracts'
 import { RoomHubClient, type RoomHubHandlers } from './RoomHubClient'
@@ -10,6 +11,8 @@ import { createRoomSession, joinRoomSession } from './roomApi'
 import {
   isWebRtcPeerConnectionSupported,
   WebRtcPeerController,
+  type RemoteVideoState,
+  type ScreenShareState,
 } from './WebRtcPeerController'
 
 type HubStatus = 'disconnected' | 'connecting' | 'connected'
@@ -27,6 +30,12 @@ export function PeerDevelopmentHarness() {
   >('not-created')
   const [peerActive, setPeerActive] = useState(false)
   const [peerNeedsReset, setPeerNeedsReset] = useState(false)
+  const [screenShareState, setScreenShareState] = useState<ScreenShareState>('inactive')
+  const [displayCaptureRequestPending, setDisplayCaptureRequestPending] =
+    useState(false)
+  const [remoteVideoState, setRemoteVideoState] = useState<RemoteVideoState>('unavailable')
+  const [remoteVideoStream, setRemoteVideoStream] = useState<MediaStream | null>(null)
+  const [hostScreenShareActive, setHostScreenShareActive] = useState(false)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const hubClientRef = useRef<RoomHubClient | null>(null)
@@ -65,6 +74,22 @@ export function PeerDevelopmentHarness() {
               : 'The peer connection closed. Reset the peer before retrying.',
           )
         },
+        onScreenShareStateChanged: (state) => {
+          setScreenShareState(state)
+          const currentController = peerControllerRef.current
+          setDisplayCaptureRequestPending(
+            currentController?.hasPendingDisplayCaptureRequest ?? false,
+          )
+          setHostSenderTrackState(currentController?.hostSenderTrackState ?? 'not-created')
+        },
+        onRemoteVideoChanged: (stream, state) => {
+          setRemoteVideoStream(stream)
+          setRemoteVideoState(state)
+        },
+        onHostScreenShareChanged: (active) => setHostScreenShareActive(active),
+        onMediaOperationFailed: () => {
+          setMessage('A browser media operation failed safely. The peer remains available.')
+        },
       })
 
       peerControllerRef.current = controller
@@ -72,6 +97,11 @@ export function PeerDevelopmentHarness() {
       setPeerActive(false)
       setPeerNeedsReset(false)
       setHostSenderTrackState('not-created')
+      setScreenShareState('inactive')
+      setDisplayCaptureRequestPending(false)
+      setRemoteVideoStream(null)
+      setRemoteVideoState('unavailable')
+      setHostScreenShareActive(false)
     },
     [webRtcSupported],
   )
@@ -83,6 +113,11 @@ export function PeerDevelopmentHarness() {
     setPeerActive(false)
     setPeerNeedsReset(false)
     setHostSenderTrackState('not-created')
+    setScreenShareState('inactive')
+    setDisplayCaptureRequestPending(false)
+    setRemoteVideoStream(null)
+    setRemoteVideoState('unavailable')
+    setHostScreenShareActive(false)
   }, [])
 
   const disposeRuntime = useCallback(async () => {
@@ -102,10 +137,11 @@ export function PeerDevelopmentHarness() {
         return
       }
 
-      peerControllerRef.current?.resetPeer()
+      peerControllerRef.current?.resetPeer(false)
       setPeerActive(false)
       setPeerNeedsReset(false)
       setHostSenderTrackState('not-created')
+      setScreenShareState('inactive')
       setMessage(`${participant.role} went offline. The peer was reset and can be retried.`)
     },
     [],
@@ -140,6 +176,7 @@ export function PeerDevelopmentHarness() {
       setPeerStatus(initialPeerConnectionStatus)
       setHubStatus('connecting')
 
+      let hubClient: RoomHubClient | null = null
       const handlers: RoomHubHandlers = {
         onPresenceSnapshot: (snapshot) => setPresence(snapshot.participants),
         onPresenceChanged: (participant) => {
@@ -163,6 +200,13 @@ export function PeerDevelopmentHarness() {
         onIceCandidate: (candidate) => {
           applyPeerSignal((peer) => peer.handleRemoteIceCandidate(candidate))
         },
+        onScreenShareStateChanged: (state: RoomScreenShareStateChanged) => {
+          if (hubClient === null || hubClientRef.current !== hubClient) {
+            return
+          }
+
+          peerControllerRef.current?.handleScreenShareStateChanged(state)
+        },
         onDisconnected: () => {
           disposePeer()
           setHubStatus('disconnected')
@@ -171,7 +215,7 @@ export function PeerDevelopmentHarness() {
         },
       }
 
-      const hubClient = new RoomHubClient(roomSession, handlers)
+      hubClient = new RoomHubClient(roomSession, handlers)
       hubClientRef.current = hubClient
       installPeerController(roomSession, hubClient)
 
@@ -194,6 +238,11 @@ export function PeerDevelopmentHarness() {
       setHostSenderTrackState('not-created')
       setPeerActive(false)
       setPeerNeedsReset(false)
+      setScreenShareState('inactive')
+      setDisplayCaptureRequestPending(false)
+      setRemoteVideoStream(null)
+      setRemoteVideoState('unavailable')
+      setHostScreenShareActive(false)
       setMessage(null)
       setBusy(false)
     }
@@ -297,7 +346,68 @@ export function PeerDevelopmentHarness() {
     setPeerActive(false)
     setPeerNeedsReset(false)
     setHostSenderTrackState('not-created')
+    setScreenShareState('inactive')
     setMessage('The peer was reset. The Room session and Hub connection were preserved.')
+  }
+
+  const shareScreen = async () => {
+    const peerController = peerControllerRef.current
+    if (peerController === null) {
+      setMessage('WebRTC peer connections are unavailable in this browser.')
+      return
+    }
+
+    setMessage(null)
+    setDisplayCaptureRequestPending(true)
+
+    try {
+      await peerController.startScreenShare()
+      if (peerControllerRef.current !== peerController) {
+        return
+      }
+
+      setHostSenderTrackState(peerController.hostSenderTrackState)
+    } catch {
+      if (peerControllerRef.current !== peerController) {
+        return
+      }
+
+      setScreenShareState(peerController.screenShareState)
+      setHostSenderTrackState(peerController.hostSenderTrackState)
+      setMessage('Screen sharing did not start. You can try again explicitly.')
+    } finally {
+      if (peerControllerRef.current === peerController) {
+        setDisplayCaptureRequestPending(
+          peerController.hasPendingDisplayCaptureRequest,
+        )
+      }
+    }
+  }
+
+  const stopScreenSharing = async () => {
+    const peerController = peerControllerRef.current
+    if (peerController === null) {
+      return
+    }
+
+    setMessage(null)
+
+    try {
+      await peerController.stopScreenShare()
+      if (peerControllerRef.current !== peerController) {
+        return
+      }
+
+      setHostSenderTrackState(peerController.hostSenderTrackState)
+    } catch {
+      if (peerControllerRef.current !== peerController) {
+        return
+      }
+
+      setScreenShareState(peerController.screenShareState)
+      setHostSenderTrackState(peerController.hostSenderTrackState)
+      setMessage('Screen sharing stopped, but browser cleanup reported a safe failure.')
+    }
   }
 
   const disconnectHub = async () => {
@@ -363,7 +473,7 @@ export function PeerDevelopmentHarness() {
     <main className="peer-harness">
       <header>
         <h1>Duovie peer development harness</h1>
-        <p>Stage 4 transport lifecycle only. No media is captured or sent.</p>
+        <p>Stage 5.1 Host display video over the existing P2P connection. No audio.</p>
       </header>
 
       {!webRtcSupported && (
@@ -436,28 +546,75 @@ export function PeerDevelopmentHarness() {
                 <StateRow label="Signaling" value={peerStatus.signalingState} />
                 <StateRow label="Retry state" value={peerNeedsReset ? 'reset required' : 'ready'} />
                 {session.role === 'Host' && (
-                  <StateRow label="Video sender track" value={hostSenderTrackState} />
+                  <>
+                    <StateRow label="Video sender track" value={hostSenderTrackState} />
+                    <StateRow label="Screen share" value={screenShareState} />
+                  </>
+                )}
+                {session.role === 'Guest' && (
+                  <StateRow
+                    label="Remote video"
+                    value={
+                      hostScreenShareActive
+                        ? remoteVideoState === 'unavailable'
+                          ? 'waiting'
+                          : remoteVideoState
+                        : 'not sharing'
+                    }
+                  />
                 )}
               </dl>
+              {session.role === 'Guest' && (
+                <GuestRemoteVideo
+                  active={hostScreenShareActive}
+                  stream={remoteVideoStream}
+                />
+              )}
             </section>
           </div>
 
           <div className="peer-actions">
             {session.role === 'Host' && (
-              <button
-                type="button"
-                disabled={
-                  busy ||
-                  hubStatus !== 'connected' ||
-                  !guestIsPresent ||
-                  !webRtcSupported ||
-                  peerActive ||
-                  peerNeedsReset
-                }
-                onClick={() => void startPeerConnection()}
-              >
-                Start P2P
-              </button>
+              <>
+                <button
+                  type="button"
+                  disabled={
+                    busy ||
+                    hubStatus !== 'connected' ||
+                    !guestIsPresent ||
+                    !webRtcSupported ||
+                    peerActive ||
+                    peerNeedsReset
+                  }
+                  onClick={() => void startPeerConnection()}
+                >
+                  Start P2P
+                </button>
+                <button
+                  type="button"
+                  disabled={
+                    busy ||
+                    hubStatus !== 'connected' ||
+                    !webRtcSupported ||
+                    !peerActive ||
+                    peerNeedsReset ||
+                    peerStatus.connectionState !== 'connected' ||
+                    peerStatus.signalingState !== 'stable' ||
+                    displayCaptureRequestPending ||
+                    screenShareState !== 'inactive'
+                  }
+                  onClick={() => void shareScreen()}
+                >
+                  Share Screen
+                </button>
+                <button
+                  type="button"
+                  disabled={busy || screenShareState === 'inactive'}
+                  onClick={() => void stopScreenSharing()}
+                >
+                  Stop Sharing
+                </button>
+              </>
             )}
             {hubStatus === 'connected' ? (
               <>
@@ -484,6 +641,56 @@ export function PeerDevelopmentHarness() {
         </section>
       )}
     </main>
+  )
+}
+
+export function GuestRemoteVideo({
+  active,
+  stream,
+}: {
+  active: boolean
+  stream: MediaStream | null
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const [playbackRequired, setPlaybackRequired] = useState(false)
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (video === null) {
+      return
+    }
+
+    video.srcObject = stream
+    if (stream !== null) {
+      void video.play().then(
+        () => setPlaybackRequired(false),
+        () => setPlaybackRequired(true),
+      )
+    }
+
+    return () => {
+      if (video.srcObject === stream) {
+        video.srcObject = null
+      }
+    }
+  }, [stream])
+
+  return (
+    <div className="peer-remote-video">
+      <video
+        ref={videoRef}
+        aria-label="Host shared display"
+        autoPlay
+        playsInline
+        controls
+        hidden={!active || stream === null}
+      />
+      {!active && <p>Host is not sharing.</p>}
+      {active && stream === null && <p>Waiting for the Host video track.</p>}
+      {active && stream !== null && playbackRequired && (
+        <p>Playback needs a user action. Use the video controls to play.</p>
+      )}
+    </div>
   )
 }
 

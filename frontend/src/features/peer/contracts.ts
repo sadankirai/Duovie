@@ -38,6 +38,12 @@ export interface RoomIceCandidate {
   usernameFragment: string | null
 }
 
+export interface RoomScreenShareStateChanged {
+  participantId: string
+  role: 'Host'
+  active: boolean
+}
+
 export interface PeerConnectionStatus {
   connectionState: RTCPeerConnectionState
   iceConnectionState: RTCIceConnectionState
@@ -58,10 +64,12 @@ export const roomHubEvents = {
   webRtcOffer: 'RoomWebRtcOffer',
   webRtcAnswer: 'RoomWebRtcAnswer',
   iceCandidate: 'RoomIceCandidate',
+  screenShareStateChanged: 'RoomScreenShareStateChanged',
 } as const
 
 export const roomHubMethods = {
   sendWebRtcOffer: 'SendWebRtcOffer',
   sendWebRtcAnswer: 'SendWebRtcAnswer',
   sendIceCandidate: 'SendIceCandidate',
+  sendScreenShareState: 'SendScreenShareState',
 } as const

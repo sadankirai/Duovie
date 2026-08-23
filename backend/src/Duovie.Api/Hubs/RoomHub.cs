@@ -203,6 +203,26 @@ public sealed class RoomHub(
                 Context.ConnectionAborted);
     }
 
+    public async Task SendScreenShareState(bool active)
+    {
+        var identity = GetConnectionIdentity(RoomScreenShareStateChanged.InvalidRequestError);
+
+        if (identity.Role != ParticipantRole.Host)
+        {
+            throw new HubException(RoomScreenShareStateChanged.InvalidRequestError);
+        }
+
+        var state = new RoomScreenShareStateChanged(
+            identity.ParticipantId,
+            identity.Role.ToString(),
+            active);
+
+        await Clients.Group(GetRoomRoleGroupName(identity.RoomId, ParticipantRole.Guest)).SendAsync(
+            RoomScreenShareEvents.StateChanged,
+            state,
+            Context.ConnectionAborted);
+    }
+
     private static Guid? TryGetRoomId(HttpRequest? request)
     {
         if (request is null

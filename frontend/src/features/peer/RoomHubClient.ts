@@ -10,6 +10,7 @@ import {
   type RoomIceCandidate,
   type RoomPresenceParticipant,
   type RoomPresenceSnapshot,
+  type RoomScreenShareStateChanged,
   type RoomSession,
   type RoomWebRtcAnswer,
   type RoomWebRtcOffer,
@@ -22,6 +23,7 @@ export interface RoomHubHandlers {
   onWebRtcOffer: (offer: RoomWebRtcOffer) => void
   onWebRtcAnswer: (answer: RoomWebRtcAnswer) => void
   onIceCandidate: (candidate: RoomIceCandidate) => void
+  onScreenShareStateChanged: (state: RoomScreenShareStateChanged) => void
   onDisconnected: () => void
 }
 
@@ -85,12 +87,20 @@ export class RoomHubClient implements PeerSignaling {
     )
   }
 
+  public async sendScreenShareState(active: boolean): Promise<void> {
+    await this.connection.invoke(roomHubMethods.sendScreenShareState, active)
+  }
+
   private registerHandlers(): void {
     this.connection.on(roomHubEvents.presenceSnapshot, this.handlers.onPresenceSnapshot)
     this.connection.on(roomHubEvents.presenceChanged, this.handlers.onPresenceChanged)
     this.connection.on(roomHubEvents.webRtcOffer, this.handlers.onWebRtcOffer)
     this.connection.on(roomHubEvents.webRtcAnswer, this.handlers.onWebRtcAnswer)
     this.connection.on(roomHubEvents.iceCandidate, this.handlers.onIceCandidate)
+    this.connection.on(
+      roomHubEvents.screenShareStateChanged,
+      this.handlers.onScreenShareStateChanged,
+    )
   }
 
   private unregisterHandlers(): void {
@@ -99,6 +109,10 @@ export class RoomHubClient implements PeerSignaling {
     this.connection.off(roomHubEvents.webRtcOffer, this.handlers.onWebRtcOffer)
     this.connection.off(roomHubEvents.webRtcAnswer, this.handlers.onWebRtcAnswer)
     this.connection.off(roomHubEvents.iceCandidate, this.handlers.onIceCandidate)
+    this.connection.off(
+      roomHubEvents.screenShareStateChanged,
+      this.handlers.onScreenShareStateChanged,
+    )
   }
 
   private reportUnexpectedDisconnect(): void {

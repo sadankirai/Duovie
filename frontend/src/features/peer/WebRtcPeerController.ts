@@ -3,6 +3,7 @@ import {
   type ParticipantRole,
   type PeerConnectionStatus,
   type RoomIceCandidate,
+  type RoomScreenShareStateChanged,
   type RoomWebRtcAnswer,
   type RoomWebRtcOffer,
 } from './contracts'
@@ -12,16 +13,27 @@ export interface PeerSignaling {
   sendOffer: (sdp: string) => Promise<void>
   sendAnswer: (sdp: string) => Promise<void>
   sendIceCandidate: (candidate: RTCIceCandidateInit) => Promise<void>
+  sendScreenShareState: (active: boolean) => Promise<void>
 }
 
 export type PeerConnectionFactory = (configuration: RTCConfiguration) => RTCPeerConnection
+export type DisplayMediaProvider = (
+  constraints: DisplayMediaStreamOptions,
+) => Promise<MediaStream>
+export type RemoteMediaStreamFactory = (tracks: MediaStreamTrack[]) => MediaStream
 
 export type PeerRecoveryReason = 'connection-failed' | 'connection-closed'
+export type ScreenShareState = 'inactive' | 'requesting' | 'active'
+export type RemoteVideoState = 'unavailable' | 'waiting' | 'receiving'
 
 export interface WebRtcPeerCallbacks {
   onStatusChanged: (status: PeerConnectionStatus) => void
   onSignalSendFailed: () => void
   onRecoveryNeeded: (reason: PeerRecoveryReason) => void
+  onScreenShareStateChanged: (state: ScreenShareState) => void
+  onRemoteVideoChanged: (stream: MediaStream | null, state: RemoteVideoState) => void
+  onHostScreenShareChanged: (active: boolean) => void
+  onMediaOperationFailed: () => void
 }
 
 interface ActivePeer {
@@ -29,10 +41,31 @@ interface ActivePeer {
   generation: number
 }
 
+interface HostVideoTransceiverOwner {
+  transceiver: RTCRtpTransceiver
+  generation: number
+}
+
 interface PendingRemoteCandidate {
   candidate: RTCIceCandidateInit
   generation: number
 }
+
+interface LocalDisplayShare {
+  activePeer: ActivePeer
+  requestId: number
+  sender: RTCRtpSender
+  track: MediaStreamTrack
+}
+
+interface RemoteVideoOwner {
+  activePeer: ActivePeer
+  stream: MediaStream
+  track: MediaStreamTrack
+}
+
+const screenCaptureFailureMessage = 'Screen capture could not be started.'
+const screenStopFailureMessage = 'Screen sharing could not be stopped cleanly.'
 
 export class WebRtcPeerError extends Error {
   public constructor(message: string) {
@@ -50,13 +83,22 @@ export class WebRtcPeerController {
   private readonly signaling: PeerSignaling
   private readonly callbacks: WebRtcPeerCallbacks
   private readonly peerConnectionFactory: PeerConnectionFactory
+  private readonly displayMediaProvider: DisplayMediaProvider
+  private readonly remoteMediaStreamFactory: RemoteMediaStreamFactory
   private activePeer: ActivePeer | null = null
-  private hostVideoTransceiver: RTCRtpTransceiver | null = null
+  private hostVideoTransceiverOwner: HostVideoTransceiverOwner | null = null
   private readonly pendingRemoteCandidates: PendingRemoteCandidate[] = []
   private flushingGeneration: number | null = null
   private nextGeneration = 0
   private resetRequired = false
   private disposed = false
+  private screenShareStateValue: ScreenShareState = 'inactive'
+  private captureRequestId = 0
+  private displayMediaRequestInFlight = false
+  private localDisplayShare: LocalDisplayShare | null = null
+  private stopScreenSharePromise: Promise<void> | null = null
+  private remoteVideoOwner: RemoteVideoOwner | null = null
+  private hostScreenShareActiveValue = false
 
   public constructor(
     role: ParticipantRole,
@@ -64,11 +106,16 @@ export class WebRtcPeerController {
     callbacks: WebRtcPeerCallbacks,
     peerConnectionFactory: PeerConnectionFactory = (configuration) =>
       new RTCPeerConnection(configuration),
+    displayMediaProvider: DisplayMediaProvider = requestDisplayMedia,
+    remoteMediaStreamFactory: RemoteMediaStreamFactory = (tracks) =>
+      new MediaStream(tracks),
   ) {
     this.role = role
     this.signaling = signaling
     this.callbacks = callbacks
     this.peerConnectionFactory = peerConnectionFactory
+    this.displayMediaProvider = displayMediaProvider
+    this.remoteMediaStreamFactory = remoteMediaStreamFactory
   }
 
   public get pendingRemoteCandidateCount(): number {
@@ -83,12 +130,25 @@ export class WebRtcPeerController {
     return this.resetRequired
   }
 
+  public get screenShareState(): ScreenShareState {
+    return this.screenShareStateValue
+  }
+
+  public get hasPendingDisplayCaptureRequest(): boolean {
+    return this.displayMediaRequestInFlight
+  }
+
+  public get hostScreenShareActive(): boolean {
+    return this.hostScreenShareActiveValue
+  }
+
   public get hostSenderTrackState(): 'not-created' | 'null' | 'attached' {
-    if (this.hostVideoTransceiver === null) {
+    const transceiver = this.hostVideoTransceiverOwner?.transceiver
+    if (transceiver === undefined) {
       return 'not-created'
     }
 
-    return this.hostVideoTransceiver.sender.track === null ? 'null' : 'attached'
+    return transceiver.sender.track === null ? 'null' : 'attached'
   }
 
   public async startHostNegotiation(guestPresent: boolean): Promise<void> {
@@ -111,9 +171,13 @@ export class WebRtcPeerController {
     const activePeer = this.createPeerConnection()
 
     try {
-      this.hostVideoTransceiver = activePeer.peerConnection.addTransceiver('video', {
+      const transceiver = activePeer.peerConnection.addTransceiver('video', {
         direction: 'sendonly',
       })
+      this.hostVideoTransceiverOwner = {
+        transceiver,
+        generation: activePeer.generation,
+      }
 
       const offer = await activePeer.peerConnection.createOffer()
       this.ensureCurrent(activePeer)
@@ -244,12 +308,165 @@ export class WebRtcPeerController {
     }
   }
 
-  public resetPeer(): void {
+  public handleScreenShareStateChanged(state: RoomScreenShareStateChanged): void {
     if (this.disposed) {
       return
     }
 
-    this.releaseActivePeer()
+    if (this.role !== 'Guest' || state.role !== 'Host') {
+      throw new WebRtcPeerError('The received screen-share state is not valid for this participant.')
+    }
+
+    if (state.active && this.activePeer === null) {
+      return
+    }
+
+    this.setHostScreenShareActive(state.active)
+  }
+
+  public async startScreenShare(): Promise<void> {
+    this.ensureReadyForAttempt()
+
+    if (this.role !== 'Host') {
+      throw new WebRtcPeerError('Only the Host can share a screen.')
+    }
+
+    this.ensureHubConnected()
+
+    if (this.screenShareStateValue !== 'inactive' || this.displayMediaRequestInFlight) {
+      throw new WebRtcPeerError('Screen sharing is already active or requesting permission.')
+    }
+
+    const activePeer = this.activePeer
+    const transceiverOwner = this.hostVideoTransceiverOwner
+    if (
+      activePeer === null ||
+      transceiverOwner === null ||
+      transceiverOwner.generation !== activePeer.generation
+    ) {
+      throw new WebRtcPeerError('A connected Host peer is required before screen sharing.')
+    }
+
+    const peerConnection = activePeer.peerConnection
+    const sender = transceiverOwner.transceiver.sender
+    if (
+      peerConnection.connectionState !== 'connected' ||
+      peerConnection.signalingState !== 'stable' ||
+      sender.track !== null
+    ) {
+      throw new WebRtcPeerError('A stable connected Host peer is required before screen sharing.')
+    }
+
+    const requestId = ++this.captureRequestId
+    this.displayMediaRequestInFlight = true
+    this.setScreenShareState('requesting')
+
+    let stream: MediaStream
+    try {
+      stream = await this.displayMediaProvider({ video: true, audio: false })
+    } catch {
+      if (this.isCaptureRequestCurrent(activePeer, sender, requestId)) {
+        this.setScreenShareState('inactive')
+      }
+
+      throw new WebRtcPeerError(screenCaptureFailureMessage)
+    } finally {
+      this.displayMediaRequestInFlight = false
+    }
+
+    const tracks = stream.getTracks()
+    const usableVideoTracks = tracks.filter(
+      (track) => track.kind === 'video' && track.readyState !== 'ended',
+    )
+
+    if (usableVideoTracks.length !== 1) {
+      stopTracks(tracks)
+      if (this.isCaptureRequestCurrent(activePeer, sender, requestId)) {
+        this.setScreenShareState('inactive')
+      }
+
+      throw new WebRtcPeerError(screenCaptureFailureMessage)
+    }
+
+    const videoTrack = usableVideoTracks[0]
+    stopTracks(tracks.filter((track) => track !== videoTrack))
+
+    if (!this.isCaptureRequestCurrent(activePeer, sender, requestId)) {
+      stopTrack(videoTrack)
+      throw new WebRtcPeerError(screenCaptureFailureMessage)
+    }
+
+    const share: LocalDisplayShare = {
+      activePeer,
+      requestId,
+      sender,
+      track: videoTrack,
+    }
+    this.localDisplayShare = share
+    videoTrack.onended = () => {
+      void this.handleLocalDisplayTrackEnded(share)
+    }
+
+    try {
+      await sender.replaceTrack(videoTrack)
+    } catch {
+      this.clearFailedDisplayShare(share)
+      throw new WebRtcPeerError(screenCaptureFailureMessage)
+    }
+
+    if (
+      !this.isCaptureRequestCurrent(activePeer, sender, requestId) ||
+      this.localDisplayShare !== share ||
+      videoTrack.readyState === 'ended'
+    ) {
+      this.clearFailedDisplayShare(share)
+      if (this.isCurrent(activePeer)) {
+        await attemptReplaceTrack(sender, null).catch(() => undefined)
+      }
+      throw new WebRtcPeerError(screenCaptureFailureMessage)
+    }
+
+    this.setScreenShareState('active')
+
+    try {
+      await this.signaling.sendScreenShareState(true)
+    } catch {
+      await this.rollbackDisplayShareAfterActiveSignalFailure(share)
+      throw new WebRtcPeerError(screenCaptureFailureMessage)
+    }
+
+    if (!this.isDisplayShareCurrent(share)) {
+      throw new WebRtcPeerError(screenCaptureFailureMessage)
+    }
+  }
+
+  public async stopScreenShare(): Promise<void> {
+    if (this.role !== 'Host') {
+      throw new WebRtcPeerError('Only the Host can stop screen sharing.')
+    }
+
+    if (this.stopScreenSharePromise !== null) {
+      return this.stopScreenSharePromise
+    }
+
+    const operation = this.performStopScreenShare()
+    this.stopScreenSharePromise = operation
+
+    try {
+      await operation
+    } finally {
+      if (this.stopScreenSharePromise === operation) {
+        this.stopScreenSharePromise = null
+      }
+    }
+  }
+
+  public resetPeer(notifyRemote = true): void {
+    if (this.disposed) {
+      return
+    }
+
+    this.releaseActivePeer(notifyRemote)
     this.resetRequired = false
     this.emitClosedStatus()
   }
@@ -343,6 +560,9 @@ export class WebRtcPeerController {
         this.callbacks.onSignalSendFailed()
       })
     }
+    peerConnection.ontrack = (event) => {
+      this.handleRemoteTrack(activePeer, event)
+    }
 
     this.activePeer = activePeer
     this.emitStatus(activePeer)
@@ -378,11 +598,15 @@ export class WebRtcPeerController {
     this.emitClosedStatus()
   }
 
-  private releaseActivePeer(): void {
+  private releaseActivePeer(notifyRemote = true): void {
     const activePeer = this.activePeer
 
+    this.stopScreenSharePromise = null
+    this.invalidateAndStopLocalCapture(notifyRemote)
+    this.clearRemoteVideo()
+    this.setHostScreenShareActive(false)
     this.activePeer = null
-    this.hostVideoTransceiver = null
+    this.hostVideoTransceiverOwner = null
     this.flushingGeneration = null
     this.pendingRemoteCandidates.length = 0
 
@@ -396,6 +620,7 @@ export class WebRtcPeerController {
     peerConnection.oniceconnectionstatechange = null
     peerConnection.onicegatheringstatechange = null
     peerConnection.onsignalingstatechange = null
+    peerConnection.ontrack = null
     peerConnection.close()
   }
 
@@ -430,6 +655,279 @@ export class WebRtcPeerController {
     }
   }
 
+  private isCaptureRequestCurrent(
+    activePeer: ActivePeer,
+    sender: RTCRtpSender,
+    requestId: number,
+  ): boolean {
+    return (
+      !this.disposed &&
+      !this.resetRequired &&
+      this.captureRequestId === requestId &&
+      this.screenShareStateValue === 'requesting' &&
+      this.isCurrent(activePeer) &&
+      this.hostVideoTransceiverOwner?.generation === activePeer.generation &&
+      this.hostVideoTransceiverOwner.transceiver.sender === sender
+    )
+  }
+
+  private clearFailedDisplayShare(share: LocalDisplayShare): void {
+    if (this.localDisplayShare === share) {
+      this.localDisplayShare = null
+    }
+
+    share.track.onended = null
+    stopTrack(share.track)
+    if (this.captureRequestId === share.requestId) {
+      this.setScreenShareState('inactive')
+    }
+  }
+
+  private isDisplayShareCurrent(share: LocalDisplayShare): boolean {
+    return (
+      !this.disposed &&
+      !this.resetRequired &&
+      this.localDisplayShare === share &&
+      this.screenShareStateValue === 'active' &&
+      this.isCurrent(share.activePeer) &&
+      this.hostVideoTransceiverOwner?.generation === share.activePeer.generation &&
+      this.hostVideoTransceiverOwner.transceiver.sender === share.sender &&
+      share.sender.track === share.track &&
+      share.track.readyState !== 'ended'
+    )
+  }
+
+  private async rollbackDisplayShareAfterActiveSignalFailure(
+    share: LocalDisplayShare,
+  ): Promise<void> {
+    if (this.localDisplayShare !== share) {
+      return
+    }
+
+    this.localDisplayShare = null
+    share.track.onended = null
+    ++this.captureRequestId
+    const shouldDetach =
+      this.isCurrent(share.activePeer) &&
+      this.hostVideoTransceiverOwner?.generation === share.activePeer.generation &&
+      this.hostVideoTransceiverOwner.transceiver.sender === share.sender
+    const detachPromise = shouldDetach
+      ? attemptReplaceTrack(share.sender, null)
+      : Promise.resolve()
+    stopTrack(share.track)
+    await detachPromise.catch(() => undefined)
+    this.setScreenShareState('inactive')
+    await this.sendInactiveScreenShareState().catch(() => undefined)
+  }
+
+  private async performStopScreenShare(): Promise<void> {
+    if (this.screenShareStateValue === 'inactive') {
+      return
+    }
+
+    const wasActive = this.screenShareStateValue === 'active'
+    const stopRequestId = ++this.captureRequestId
+    const share = this.localDisplayShare
+    this.localDisplayShare = null
+
+    if (share === null) {
+      this.setScreenShareState('inactive')
+      return
+    }
+
+    share.track.onended = null
+    const shouldDetach =
+      this.isCurrent(share.activePeer) &&
+      this.hostVideoTransceiverOwner?.generation === share.activePeer.generation &&
+      this.hostVideoTransceiverOwner.transceiver.sender === share.sender
+    const detachPromise = shouldDetach
+      ? attemptReplaceTrack(share.sender, null)
+      : Promise.resolve()
+    stopTrack(share.track)
+
+    let detachFailed = false
+    try {
+      await detachPromise
+    } catch {
+      detachFailed = true
+    }
+
+    if (this.captureRequestId === stopRequestId) {
+      this.setScreenShareState('inactive')
+    }
+
+    const stateSendFailed = wasActive
+      ? await this.sendInactiveScreenShareState()
+      : false
+
+    if (detachFailed || stateSendFailed) {
+      throw new WebRtcPeerError(screenStopFailureMessage)
+    }
+  }
+
+  private async handleLocalDisplayTrackEnded(share: LocalDisplayShare): Promise<void> {
+    if (this.localDisplayShare !== share) {
+      return
+    }
+
+    const wasActive = this.screenShareStateValue === 'active'
+    this.localDisplayShare = null
+    share.track.onended = null
+    const endRequestId = ++this.captureRequestId
+    const shouldDetach =
+      this.isCurrent(share.activePeer) &&
+      this.hostVideoTransceiverOwner?.generation === share.activePeer.generation &&
+      this.hostVideoTransceiverOwner.transceiver.sender === share.sender
+    const detachPromise = shouldDetach
+      ? attemptReplaceTrack(share.sender, null)
+      : Promise.resolve()
+    stopTrack(share.track)
+
+    let detachFailed = false
+    try {
+      await detachPromise
+    } catch {
+      detachFailed = true
+    }
+
+    if (this.captureRequestId !== endRequestId) {
+      return
+    }
+
+    this.setScreenShareState('inactive')
+    const stateSendFailed = wasActive
+      ? await this.sendInactiveScreenShareState()
+      : false
+    if (detachFailed || stateSendFailed) {
+      this.callbacks.onMediaOperationFailed()
+    }
+  }
+
+  private invalidateAndStopLocalCapture(notifyRemote: boolean): void {
+    const wasActive = this.screenShareStateValue === 'active'
+    ++this.captureRequestId
+    const share = this.localDisplayShare
+    this.localDisplayShare = null
+
+    if (share !== null) {
+      share.track.onended = null
+      void attemptReplaceTrack(share.sender, null).catch(() => undefined)
+      stopTrack(share.track)
+    }
+
+    this.setScreenShareState('inactive')
+    if (wasActive && notifyRemote) {
+      void this.sendInactiveScreenShareState().then((failed) => {
+        if (failed) {
+          this.callbacks.onMediaOperationFailed()
+        }
+      })
+    }
+  }
+
+  private async sendInactiveScreenShareState(): Promise<boolean> {
+    if (this.role !== 'Host' || !this.signaling.isConnected()) {
+      return false
+    }
+
+    try {
+      await this.signaling.sendScreenShareState(false)
+      return false
+    } catch {
+      return true
+    }
+  }
+
+  private handleRemoteTrack(activePeer: ActivePeer, event: RTCTrackEvent): void {
+    if (
+      this.role !== 'Guest' ||
+      !this.isCurrent(activePeer) ||
+      event.track.kind !== 'video' ||
+      event.track.readyState === 'ended'
+    ) {
+      return
+    }
+
+    if (this.remoteVideoOwner !== null) {
+      return
+    }
+
+    let stream: MediaStream
+    try {
+      stream = this.remoteMediaStreamFactory([event.track])
+    } catch {
+      this.callbacks.onMediaOperationFailed()
+      return
+    }
+
+    const remoteVideoOwner: RemoteVideoOwner = {
+      activePeer,
+      stream,
+      track: event.track,
+    }
+    this.remoteVideoOwner = remoteVideoOwner
+    event.track.onmute = () => {
+      if (this.isRemoteVideoCurrent(remoteVideoOwner)) {
+        this.callbacks.onRemoteVideoChanged(stream, 'waiting')
+      }
+    }
+    event.track.onunmute = () => {
+      if (this.isRemoteVideoCurrent(remoteVideoOwner)) {
+        this.callbacks.onRemoteVideoChanged(stream, 'receiving')
+      }
+    }
+    event.track.onended = () => {
+      if (!this.isRemoteVideoCurrent(remoteVideoOwner)) {
+        return
+      }
+
+      this.clearRemoteVideo()
+    }
+
+    this.callbacks.onRemoteVideoChanged(
+      stream,
+      event.track.muted ? 'waiting' : 'receiving',
+    )
+  }
+
+  private isRemoteVideoCurrent(remoteVideoOwner: RemoteVideoOwner): boolean {
+    return (
+      this.remoteVideoOwner === remoteVideoOwner &&
+      this.isCurrent(remoteVideoOwner.activePeer)
+    )
+  }
+
+  private clearRemoteVideo(): void {
+    const remoteVideoOwner = this.remoteVideoOwner
+    if (remoteVideoOwner === null) {
+      return
+    }
+
+    this.remoteVideoOwner = null
+    remoteVideoOwner.track.onmute = null
+    remoteVideoOwner.track.onunmute = null
+    remoteVideoOwner.track.onended = null
+    this.callbacks.onRemoteVideoChanged(null, 'unavailable')
+  }
+
+  private setHostScreenShareActive(active: boolean): void {
+    if (this.hostScreenShareActiveValue === active) {
+      return
+    }
+
+    this.hostScreenShareActiveValue = active
+    this.callbacks.onHostScreenShareChanged(active)
+  }
+
+  private setScreenShareState(state: ScreenShareState): void {
+    if (this.screenShareStateValue === state) {
+      return
+    }
+
+    this.screenShareStateValue = state
+    this.callbacks.onScreenShareStateChanged(state)
+  }
+
   private ensureCurrent(activePeer: ActivePeer): void {
     if (!this.isCurrent(activePeer)) {
       throw new WebRtcPeerError('The peer negotiation was replaced or reset.')
@@ -461,5 +959,43 @@ export class WebRtcPeerController {
       iceConnectionState: 'closed',
       signalingState: 'closed',
     })
+  }
+}
+
+async function requestDisplayMedia(
+  constraints: DisplayMediaStreamOptions,
+): Promise<MediaStream> {
+  if (
+    typeof navigator === 'undefined' ||
+    typeof navigator.mediaDevices?.getDisplayMedia !== 'function'
+  ) {
+    throw new WebRtcPeerError(screenCaptureFailureMessage)
+  }
+
+  return navigator.mediaDevices.getDisplayMedia(constraints)
+}
+
+function stopTracks(tracks: MediaStreamTrack[]): void {
+  for (const track of tracks) {
+    stopTrack(track)
+  }
+}
+
+function attemptReplaceTrack(
+  sender: RTCRtpSender,
+  track: MediaStreamTrack | null,
+): Promise<void> {
+  try {
+    return sender.replaceTrack(track)
+  } catch {
+    return Promise.reject()
+  }
+}
+
+function stopTrack(track: MediaStreamTrack): void {
+  try {
+    track.stop()
+  } catch {
+    // Capture cleanup is best-effort and must not expose browser details.
   }
 }

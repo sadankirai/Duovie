@@ -110,6 +110,152 @@ public sealed class RoomHubSignalingIntegrationTests(PostgreSqlFixture fixture)
     }
 
     [Fact]
+    public async Task Screen_share_active_and_inactive_reach_every_Guest_connection_without_Host_reflection()
+    {
+        using var factory = new PostgreSqlDuovieApiFactory(fixture.ConnectionString);
+        using var client = CreateHttpClient(factory);
+        var host = await CreateRoomAsync(client);
+        var guest = await JoinRoomAsync(client, host.RoomId);
+        await using var firstHost = CreateHubConnection(factory, host);
+        await using var secondHost = CreateHubConnection(factory, host);
+        await using var firstGuest = CreateHubConnection(factory, guest);
+        await using var secondGuest = CreateHubConnection(factory, guest);
+        var firstGuestActive = Capture<RoomScreenShareStateChanged>(
+            firstGuest,
+            RoomScreenShareEvents.StateChanged);
+        var secondGuestActive = Capture<RoomScreenShareStateChanged>(
+            secondGuest,
+            RoomScreenShareEvents.StateChanged);
+        var secondHostReflection = Capture<RoomScreenShareStateChanged>(
+            secondHost,
+            RoomScreenShareEvents.StateChanged);
+
+        await StartAndReceiveSnapshotAsync(firstHost);
+        await StartAndReceiveSnapshotAsync(secondHost);
+        await StartAndReceiveSnapshotAsync(firstGuest);
+        await StartAndReceiveSnapshotAsync(secondGuest);
+
+        await firstHost.InvokeAsync(nameof(RoomHub.SendScreenShareState), true);
+
+        var activeState = await firstGuestActive.Task.WaitAsync(EventTimeout);
+        Assert.Equal(activeState, await secondGuestActive.Task.WaitAsync(EventTimeout));
+        AssertScreenShareState(activeState, host, active: true, guest.Credential);
+        await AssertNoSignalAsync(secondHostReflection);
+
+        var firstGuestInactive = Capture<RoomScreenShareStateChanged>(
+            firstGuest,
+            RoomScreenShareEvents.StateChanged);
+        var secondGuestInactive = Capture<RoomScreenShareStateChanged>(
+            secondGuest,
+            RoomScreenShareEvents.StateChanged);
+
+        await firstHost.InvokeAsync(nameof(RoomHub.SendScreenShareState), false);
+
+        var inactiveState = await firstGuestInactive.Task.WaitAsync(EventTimeout);
+        Assert.Equal(inactiveState, await secondGuestInactive.Task.WaitAsync(EventTimeout));
+        AssertScreenShareState(inactiveState, host, active: false, guest.Credential);
+    }
+
+    [Fact]
+    public async Task Screen_share_state_is_Room_scoped()
+    {
+        using var factory = new PostgreSqlDuovieApiFactory(fixture.ConnectionString);
+        using var client = CreateHttpClient(factory);
+        var firstHostSession = await CreateRoomAsync(client);
+        var firstGuestSession = await JoinRoomAsync(client, firstHostSession.RoomId);
+        var secondHostSession = await CreateRoomAsync(client);
+        var secondGuestSession = await JoinRoomAsync(client, secondHostSession.RoomId);
+        await using var firstHost = CreateHubConnection(factory, firstHostSession);
+        await using var firstGuest = CreateHubConnection(factory, firstGuestSession);
+        await using var secondHost = CreateHubConnection(factory, secondHostSession);
+        await using var secondGuest = CreateHubConnection(factory, secondGuestSession);
+        var firstRoomState = Capture<RoomScreenShareStateChanged>(
+            firstGuest,
+            RoomScreenShareEvents.StateChanged);
+        var secondRoomState = Capture<RoomScreenShareStateChanged>(
+            secondGuest,
+            RoomScreenShareEvents.StateChanged);
+
+        await StartAndReceiveSnapshotAsync(firstHost);
+        await StartAndReceiveSnapshotAsync(firstGuest);
+        await StartAndReceiveSnapshotAsync(secondHost);
+        await StartAndReceiveSnapshotAsync(secondGuest);
+
+        await firstHost.InvokeAsync(nameof(RoomHub.SendScreenShareState), true);
+
+        AssertScreenShareState(
+            await firstRoomState.Task.WaitAsync(EventTimeout),
+            firstHostSession,
+            active: true,
+            firstGuestSession.Credential,
+            secondHostSession.Credential,
+            secondGuestSession.Credential);
+        await AssertNoSignalAsync(secondRoomState);
+    }
+
+    [Fact]
+    public async Task Guest_cannot_send_screen_share_state_and_cannot_supply_authority()
+    {
+        using var factory = new PostgreSqlDuovieApiFactory(fixture.ConnectionString);
+        using var client = CreateHttpClient(factory);
+        var host = await CreateRoomAsync(client);
+        var guest = await JoinRoomAsync(client, host.RoomId);
+        await using var hostConnection = CreateHubConnection(factory, host);
+        await using var guestConnection = CreateHubConnection(factory, guest);
+        var unauthorizedState = Capture<RoomScreenShareStateChanged>(
+            guestConnection,
+            RoomScreenShareEvents.StateChanged);
+
+        await StartAndReceiveSnapshotAsync(hostConnection);
+        await StartAndReceiveSnapshotAsync(guestConnection);
+
+        var exception = await Assert.ThrowsAsync<HubException>(
+            () => guestConnection.InvokeAsync(nameof(RoomHub.SendScreenShareState), true));
+
+        Assert.StartsWith(
+            $"An unexpected error occurred invoking '{nameof(RoomHub.SendScreenShareState)}' on the server.",
+            exception.Message,
+            StringComparison.Ordinal);
+        Assert.EndsWith(
+            $"HubException: {RoomScreenShareStateChanged.InvalidRequestError}",
+            exception.Message,
+            StringComparison.Ordinal);
+        await AssertNoSignalAsync(unauthorizedState);
+
+        var authorizedState = Capture<RoomScreenShareStateChanged>(
+            guestConnection,
+            RoomScreenShareEvents.StateChanged);
+        await hostConnection.InvokeAsync(nameof(RoomHub.SendScreenShareState), true);
+        AssertScreenShareState(
+            await authorizedState.Task.WaitAsync(EventTimeout),
+            host,
+            active: true,
+            guest.Credential);
+    }
+
+    [Fact]
+    public async Task Screen_share_state_with_no_Guest_online_is_not_replayed_later()
+    {
+        using var factory = new PostgreSqlDuovieApiFactory(fixture.ConnectionString);
+        using var client = CreateHttpClient(factory);
+        var host = await CreateRoomAsync(client);
+        await using var hostConnection = CreateHubConnection(factory, host);
+
+        await StartAndReceiveSnapshotAsync(hostConnection);
+        await hostConnection.InvokeAsync(nameof(RoomHub.SendScreenShareState), true);
+
+        var guest = await JoinRoomAsync(client, host.RoomId);
+        await using var guestConnection = CreateHubConnection(factory, guest);
+        var oldState = Capture<RoomScreenShareStateChanged>(
+            guestConnection,
+            RoomScreenShareEvents.StateChanged);
+
+        await StartAndReceiveSnapshotAsync(guestConnection);
+
+        await AssertNoSignalAsync(oldState);
+    }
+
+    [Fact]
     public async Task Browser_style_SDP_with_trailing_CRLF_is_relayed_verbatim_for_Offer_and_Answer()
     {
         using var factory = new PostgreSqlDuovieApiFactory(fixture.ConnectionString);
@@ -184,7 +330,7 @@ public sealed class RoomHubSignalingIntegrationTests(PostgreSqlFixture fixture)
     }
 
     [Fact]
-    public void Signaling_method_contracts_accept_no_authority_or_destination_parameters()
+    public void Realtime_method_contracts_accept_no_authority_or_destination_parameters()
     {
         AssertMethodParameters(nameof(RoomHub.SendWebRtcOffer), ("sdp", typeof(string)));
         AssertMethodParameters(nameof(RoomHub.SendWebRtcAnswer), ("sdp", typeof(string)));
@@ -194,6 +340,9 @@ public sealed class RoomHubSignalingIntegrationTests(PostgreSqlFixture fixture)
             ("sdpMid", typeof(string)),
             ("sdpMLineIndex", typeof(int?)),
             ("usernameFragment", typeof(string)));
+        AssertMethodParameters(
+            nameof(RoomHub.SendScreenShareState),
+            ("active", typeof(bool)));
     }
 
     [Fact]
@@ -492,6 +641,21 @@ public sealed class RoomHubSignalingIntegrationTests(PostgreSqlFixture fixture)
         AssertPayload(
             iceCandidate,
             ["Candidate", "ParticipantId", "Role", "SdpMLineIndex", "SdpMid", "UsernameFragment"],
+            [sender.Credential, .. otherCredentials]);
+    }
+
+    private static void AssertScreenShareState(
+        RoomScreenShareStateChanged state,
+        RoomSession sender,
+        bool active,
+        params string[] otherCredentials)
+    {
+        Assert.Equal(sender.ParticipantId, state.ParticipantId);
+        Assert.Equal("Host", state.Role);
+        Assert.Equal(active, state.Active);
+        AssertPayload(
+            state,
+            ["Active", "ParticipantId", "Role"],
             [sender.Credential, .. otherCredentials]);
     }
 
