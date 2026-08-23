@@ -46,6 +46,8 @@ Task 0.1 is documentation only. It does not create applications, packages, Docke
 
 ## Stage 4 — WebRTC Peer Connection
 
+**Status:** Peer connection lifecycle and supported-environment verification completed (Task 4.2).
+
 **Objective:** prove peer connectivity before capture.  
 **Scope:** negotiation, offers/answers, ICE candidates, connection lifecycle, cleanup.  
 **Non-goal:** production screen sharing.  

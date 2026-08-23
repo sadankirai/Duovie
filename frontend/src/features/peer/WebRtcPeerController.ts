@@ -16,9 +16,22 @@ export interface PeerSignaling {
 
 export type PeerConnectionFactory = (configuration: RTCConfiguration) => RTCPeerConnection
 
+export type PeerRecoveryReason = 'connection-failed' | 'connection-closed'
+
 export interface WebRtcPeerCallbacks {
   onStatusChanged: (status: PeerConnectionStatus) => void
   onSignalSendFailed: () => void
+  onRecoveryNeeded: (reason: PeerRecoveryReason) => void
+}
+
+interface ActivePeer {
+  peerConnection: RTCPeerConnection
+  generation: number
+}
+
+interface PendingRemoteCandidate {
+  candidate: RTCIceCandidateInit
+  generation: number
 }
 
 export class WebRtcPeerError extends Error {
@@ -37,11 +50,13 @@ export class WebRtcPeerController {
   private readonly signaling: PeerSignaling
   private readonly callbacks: WebRtcPeerCallbacks
   private readonly peerConnectionFactory: PeerConnectionFactory
-  private peerConnection: RTCPeerConnection | null = null
+  private activePeer: ActivePeer | null = null
   private hostVideoTransceiver: RTCRtpTransceiver | null = null
-  private readonly pendingRemoteCandidates: RTCIceCandidateInit[] = []
-  private flushingRemoteCandidates = false
-  private negotiationStarted = false
+  private readonly pendingRemoteCandidates: PendingRemoteCandidate[] = []
+  private flushingGeneration: number | null = null
+  private nextGeneration = 0
+  private resetRequired = false
+  private disposed = false
 
   public constructor(
     role: ParticipantRole,
@@ -60,6 +75,14 @@ export class WebRtcPeerController {
     return this.pendingRemoteCandidates.length
   }
 
+  public get hasActivePeer(): boolean {
+    return this.activePeer !== null
+  }
+
+  public get requiresResetBeforeRetry(): boolean {
+    return this.resetRequired
+  }
+
   public get hostSenderTrackState(): 'not-created' | 'null' | 'attached' {
     if (this.hostVideoTransceiver === null) {
       return 'not-created'
@@ -69,98 +92,134 @@ export class WebRtcPeerController {
   }
 
   public async startHostNegotiation(guestPresent: boolean): Promise<void> {
+    this.ensureReadyForAttempt()
+
     if (this.role !== 'Host') {
       throw new WebRtcPeerError('Only the Host can start peer negotiation.')
     }
 
-    if (!this.signaling.isConnected()) {
-      throw new WebRtcPeerError('The Room Hub is disconnected.')
-    }
+    this.ensureHubConnected()
 
     if (!guestPresent) {
       throw new WebRtcPeerError('The Guest must be online before negotiation starts.')
     }
 
-    if (this.negotiationStarted) {
+    if (this.activePeer !== null) {
       throw new WebRtcPeerError('Peer negotiation is already active.')
     }
 
-    this.negotiationStarted = true
-    const peerConnection = this.ensurePeerConnection()
+    const activePeer = this.createPeerConnection()
 
-    if (this.hostVideoTransceiver === null) {
-      this.hostVideoTransceiver = peerConnection.addTransceiver('video', {
+    try {
+      this.hostVideoTransceiver = activePeer.peerConnection.addTransceiver('video', {
         direction: 'sendonly',
       })
+
+      const offer = await activePeer.peerConnection.createOffer()
+      this.ensureCurrent(activePeer)
+      await activePeer.peerConnection.setLocalDescription(offer)
+      this.ensureCurrent(activePeer)
+      this.emitStatus(activePeer)
+
+      const localDescription = activePeer.peerConnection.localDescription
+      if (localDescription?.type !== 'offer' || !localDescription.sdp) {
+        throw new WebRtcPeerError('The browser did not produce a valid local Offer.')
+      }
+
+      this.ensureHubConnected()
+      await this.signaling.sendOffer(localDescription.sdp)
+      this.ensureCurrent(activePeer)
+    } catch (error) {
+      this.failAttempt(activePeer)
+      throw error
     }
-
-    const offer = await peerConnection.createOffer()
-    await peerConnection.setLocalDescription(offer)
-    this.emitStatus()
-
-    const localDescription = peerConnection.localDescription
-    if (localDescription?.type !== 'offer' || !localDescription.sdp) {
-      throw new WebRtcPeerError('The browser did not produce a valid local Offer.')
-    }
-
-    if (!this.signaling.isConnected()) {
-      throw new WebRtcPeerError('The Room Hub disconnected during negotiation.')
-    }
-
-    await this.signaling.sendOffer(localDescription.sdp)
   }
 
   public async handleOffer(offer: RoomWebRtcOffer): Promise<void> {
+    this.ensureReadyForAttempt()
+
     if (this.role !== 'Guest' || offer.role !== 'Host') {
       throw new WebRtcPeerError('The received Offer is not valid for this participant.')
     }
 
-    if (!this.signaling.isConnected()) {
-      throw new WebRtcPeerError('The Room Hub is disconnected.')
+    this.ensureHubConnected()
+
+    const activePeer = this.activePeer ?? this.createPeerConnection()
+
+    try {
+      this.ensureInitialSignalingState(activePeer.peerConnection, 'Offer')
+      await activePeer.peerConnection.setRemoteDescription({ type: 'offer', sdp: offer.sdp })
+      this.ensureCurrent(activePeer)
+      await this.flushPendingRemoteCandidates(activePeer)
+      this.ensureCurrent(activePeer)
+      this.emitStatus(activePeer)
+
+      const answer = await activePeer.peerConnection.createAnswer()
+      this.ensureCurrent(activePeer)
+      await activePeer.peerConnection.setLocalDescription(answer)
+      this.ensureCurrent(activePeer)
+      this.emitStatus(activePeer)
+
+      const localDescription = activePeer.peerConnection.localDescription
+      if (localDescription?.type !== 'answer' || !localDescription.sdp) {
+        throw new WebRtcPeerError('The browser did not produce a valid local Answer.')
+      }
+
+      this.ensureHubConnected()
+      await this.signaling.sendAnswer(localDescription.sdp)
+      this.ensureCurrent(activePeer)
+    } catch (error) {
+      this.failAttempt(activePeer)
+      throw error
     }
-
-    const peerConnection = this.ensurePeerConnection()
-    await peerConnection.setRemoteDescription({ type: 'offer', sdp: offer.sdp })
-    await this.flushPendingRemoteCandidates(peerConnection)
-    this.emitStatus()
-
-    const answer = await peerConnection.createAnswer()
-    await peerConnection.setLocalDescription(answer)
-    this.emitStatus()
-
-    const localDescription = peerConnection.localDescription
-    if (localDescription?.type !== 'answer' || !localDescription.sdp) {
-      throw new WebRtcPeerError('The browser did not produce a valid local Answer.')
-    }
-
-    if (!this.signaling.isConnected()) {
-      throw new WebRtcPeerError('The Room Hub disconnected during negotiation.')
-    }
-
-    await this.signaling.sendAnswer(localDescription.sdp)
   }
 
   public async handleAnswer(answer: RoomWebRtcAnswer): Promise<void> {
+    this.ensureReadyForAttempt()
+
     if (this.role !== 'Host' || answer.role !== 'Guest') {
       throw new WebRtcPeerError('The received Answer is not valid for this participant.')
     }
 
-    const peerConnection = this.peerConnection
-    if (peerConnection === null) {
+    const activePeer = this.activePeer
+    if (activePeer === null) {
       throw new WebRtcPeerError('There is no Host negotiation for the received Answer.')
     }
 
-    await peerConnection.setRemoteDescription({ type: 'answer', sdp: answer.sdp })
-    await this.flushPendingRemoteCandidates(peerConnection)
-    this.emitStatus()
+    const peerConnection = activePeer.peerConnection
+    if (
+      peerConnection.signalingState !== 'have-local-offer' ||
+      peerConnection.localDescription?.type !== 'offer' ||
+      peerConnection.remoteDescription !== null
+    ) {
+      this.failAttempt(activePeer)
+      throw new WebRtcPeerError('The received Answer is not valid for the current signaling state.')
+    }
+
+    try {
+      await peerConnection.setRemoteDescription({ type: 'answer', sdp: answer.sdp })
+      this.ensureCurrent(activePeer)
+      await this.flushPendingRemoteCandidates(activePeer)
+      this.ensureCurrent(activePeer)
+      this.emitStatus(activePeer)
+    } catch (error) {
+      this.failAttempt(activePeer)
+      throw error
+    }
   }
 
   public async handleRemoteIceCandidate(signal: RoomIceCandidate): Promise<void> {
+    this.ensureReadyForAttempt()
+
     if (signal.role === this.role) {
       throw new WebRtcPeerError('The received ICE candidate has the wrong role.')
     }
 
-    const peerConnection = this.ensurePeerConnection()
+    if (this.role === 'Host' && this.activePeer === null) {
+      throw new WebRtcPeerError('There is no Host negotiation for the received ICE candidate.')
+    }
+
+    const activePeer = this.activePeer ?? this.createPeerConnection()
     const candidate: RTCIceCandidateInit = {
       candidate: signal.candidate,
       sdpMid: signal.sdpMid,
@@ -168,101 +227,239 @@ export class WebRtcPeerController {
       usernameFragment: signal.usernameFragment,
     }
 
-    if (peerConnection.remoteDescription === null || this.flushingRemoteCandidates) {
-      this.pendingRemoteCandidates.push(candidate)
+    if (
+      activePeer.peerConnection.remoteDescription === null ||
+      this.flushingGeneration === activePeer.generation
+    ) {
+      this.pendingRemoteCandidates.push({ candidate, generation: activePeer.generation })
       return
     }
 
-    await peerConnection.addIceCandidate(candidate)
+    try {
+      await activePeer.peerConnection.addIceCandidate(candidate)
+      this.ensureCurrent(activePeer)
+    } catch (error) {
+      this.failAttempt(activePeer)
+      throw error
+    }
+  }
+
+  public resetPeer(): void {
+    if (this.disposed) {
+      return
+    }
+
+    this.releaseActivePeer()
+    this.resetRequired = false
+    this.emitClosedStatus()
   }
 
   public close(): void {
-    const peerConnection = this.peerConnection
-
-    this.peerConnection = null
-    this.hostVideoTransceiver = null
-    this.negotiationStarted = false
-    this.flushingRemoteCandidates = false
-    this.pendingRemoteCandidates.length = 0
-
-    if (peerConnection !== null) {
-      peerConnection.onicecandidate = null
-      peerConnection.onconnectionstatechange = null
-      peerConnection.oniceconnectionstatechange = null
-      peerConnection.onicegatheringstatechange = null
-      peerConnection.onsignalingstatechange = null
-      peerConnection.close()
+    if (this.disposed) {
+      return
     }
 
-    this.callbacks.onStatusChanged({
-      ...initialPeerConnectionStatus,
-      connectionState: 'closed',
-      iceConnectionState: 'closed',
-      signalingState: 'closed',
-    })
+    this.disposed = true
+    this.releaseActivePeer()
+    this.resetRequired = false
+    this.emitClosedStatus()
   }
 
-  private ensurePeerConnection(): RTCPeerConnection {
-    if (this.peerConnection !== null) {
-      return this.peerConnection
+  private ensureReadyForAttempt(): void {
+    if (this.disposed) {
+      throw new WebRtcPeerError('The peer controller is closed.')
     }
 
-    const peerConnection = this.peerConnectionFactory({ iceServers: [] })
-    const emitStatus = () => this.emitStatus()
+    if (this.resetRequired) {
+      throw new WebRtcPeerError('Reset the peer before retrying negotiation.')
+    }
+  }
 
-    peerConnection.onconnectionstatechange = emitStatus
-    peerConnection.oniceconnectionstatechange = emitStatus
-    peerConnection.onicegatheringstatechange = emitStatus
-    peerConnection.onsignalingstatechange = emitStatus
-    peerConnection.onicecandidate = (event) => {
-      if (event.candidate === null || !this.signaling.isConnected()) {
+  private ensureHubConnected(): void {
+    if (!this.signaling.isConnected()) {
+      throw new WebRtcPeerError('The Room Hub is disconnected.')
+    }
+  }
+
+  private ensureInitialSignalingState(
+    peerConnection: RTCPeerConnection,
+    descriptionType: string,
+  ): void {
+    if (
+      peerConnection.signalingState !== 'stable' ||
+      peerConnection.localDescription !== null ||
+      peerConnection.remoteDescription !== null
+    ) {
+      throw new WebRtcPeerError(
+        `The received ${descriptionType} is not valid for the current signaling state.`,
+      )
+    }
+  }
+
+  private createPeerConnection(): ActivePeer {
+    const peerConnection = this.peerConnectionFactory({ iceServers: [] })
+    const activePeer = { peerConnection, generation: ++this.nextGeneration }
+    const emitStatus = () => {
+      if (this.isCurrent(activePeer)) {
+        this.emitStatus(activePeer)
+      }
+    }
+
+    peerConnection.onconnectionstatechange = () => {
+      if (!this.isCurrent(activePeer)) {
         return
       }
 
-      void this.signaling
-        .sendIceCandidate(event.candidate.toJSON())
-        .catch(() => this.callbacks.onSignalSendFailed())
+      emitStatus()
+      this.handleConnectionStateChange(activePeer)
     }
+    peerConnection.oniceconnectionstatechange = () => {
+      if (!this.isCurrent(activePeer)) {
+        return
+      }
 
-    this.peerConnection = peerConnection
-    this.emitStatus()
-    return peerConnection
-  }
-
-  private async flushPendingRemoteCandidates(
-    peerConnection: RTCPeerConnection,
-  ): Promise<void> {
-    if (peerConnection.remoteDescription === null || this.flushingRemoteCandidates) {
-      return
+      emitStatus()
+      if (peerConnection.iceConnectionState === 'failed') {
+        this.requireRecovery(activePeer, 'connection-failed')
+      }
     }
+    peerConnection.onicegatheringstatechange = emitStatus
+    peerConnection.onsignalingstatechange = emitStatus
+    peerConnection.onicecandidate = (event) => {
+      if (
+        event.candidate === null ||
+        !this.isCurrent(activePeer) ||
+        !this.signaling.isConnected()
+      ) {
+        return
+      }
 
-    this.flushingRemoteCandidates = true
-
-    try {
-      while (this.pendingRemoteCandidates.length > 0) {
-        const candidate = this.pendingRemoteCandidates.shift()
-        if (candidate === undefined || this.peerConnection !== peerConnection) {
+      void this.signaling.sendIceCandidate(event.candidate.toJSON()).catch(() => {
+        if (!this.isCurrent(activePeer)) {
           return
         }
 
-        await peerConnection.addIceCandidate(candidate)
-      }
-    } finally {
-      this.flushingRemoteCandidates = false
+        this.failAttempt(activePeer)
+        this.callbacks.onSignalSendFailed()
+      })
+    }
+
+    this.activePeer = activePeer
+    this.emitStatus(activePeer)
+    return activePeer
+  }
+
+  private handleConnectionStateChange(activePeer: ActivePeer): void {
+    const connectionState = activePeer.peerConnection.connectionState
+    if (connectionState === 'failed') {
+      this.requireRecovery(activePeer, 'connection-failed')
+    } else if (connectionState === 'closed') {
+      this.requireRecovery(activePeer, 'connection-closed')
     }
   }
 
-  private emitStatus(): void {
-    const peerConnection = this.peerConnection
-    if (peerConnection === null) {
+  private requireRecovery(activePeer: ActivePeer, reason: PeerRecoveryReason): void {
+    if (!this.isCurrent(activePeer)) {
       return
     }
 
+    this.resetRequired = true
+    this.releaseActivePeer()
+    this.callbacks.onRecoveryNeeded(reason)
+  }
+
+  private failAttempt(activePeer: ActivePeer): void {
+    if (!this.isCurrent(activePeer)) {
+      return
+    }
+
+    this.resetRequired = true
+    this.releaseActivePeer()
+    this.emitClosedStatus()
+  }
+
+  private releaseActivePeer(): void {
+    const activePeer = this.activePeer
+
+    this.activePeer = null
+    this.hostVideoTransceiver = null
+    this.flushingGeneration = null
+    this.pendingRemoteCandidates.length = 0
+
+    if (activePeer === null) {
+      return
+    }
+
+    const { peerConnection } = activePeer
+    peerConnection.onicecandidate = null
+    peerConnection.onconnectionstatechange = null
+    peerConnection.oniceconnectionstatechange = null
+    peerConnection.onicegatheringstatechange = null
+    peerConnection.onsignalingstatechange = null
+    peerConnection.close()
+  }
+
+  private async flushPendingRemoteCandidates(activePeer: ActivePeer): Promise<void> {
+    if (
+      activePeer.peerConnection.remoteDescription === null ||
+      this.flushingGeneration === activePeer.generation
+    ) {
+      return
+    }
+
+    this.flushingGeneration = activePeer.generation
+
+    try {
+      while (this.pendingRemoteCandidates.length > 0) {
+        const pendingCandidate = this.pendingRemoteCandidates.shift()
+        if (pendingCandidate === undefined) {
+          return
+        }
+
+        this.ensureCurrent(activePeer)
+        if (pendingCandidate.generation !== activePeer.generation) {
+          continue
+        }
+
+        await activePeer.peerConnection.addIceCandidate(pendingCandidate.candidate)
+      }
+    } finally {
+      if (this.flushingGeneration === activePeer.generation) {
+        this.flushingGeneration = null
+      }
+    }
+  }
+
+  private ensureCurrent(activePeer: ActivePeer): void {
+    if (!this.isCurrent(activePeer)) {
+      throw new WebRtcPeerError('The peer negotiation was replaced or reset.')
+    }
+  }
+
+  private isCurrent(activePeer: ActivePeer): boolean {
+    return this.activePeer?.generation === activePeer.generation
+  }
+
+  private emitStatus(activePeer: ActivePeer): void {
+    if (!this.isCurrent(activePeer)) {
+      return
+    }
+
+    const { peerConnection } = activePeer
     this.callbacks.onStatusChanged({
       connectionState: peerConnection.connectionState,
       iceConnectionState: peerConnection.iceConnectionState,
       iceGatheringState: peerConnection.iceGatheringState,
       signalingState: peerConnection.signalingState,
+    })
+  }
+
+  private emitClosedStatus(): void {
+    this.callbacks.onStatusChanged({
+      ...initialPeerConnectionStatus,
+      connectionState: 'closed',
+      iceConnectionState: 'closed',
+      signalingState: 'closed',
     })
   }
 }

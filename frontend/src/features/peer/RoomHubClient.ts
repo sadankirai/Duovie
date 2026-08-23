@@ -1,6 +1,7 @@
 import {
   HubConnectionBuilder,
   HubConnectionState,
+  LogLevel,
   type HubConnection,
 } from '@microsoft/signalr'
 import {
@@ -28,6 +29,7 @@ export class RoomHubClient implements PeerSignaling {
   private readonly connection: HubConnection
   private readonly handlers: RoomHubHandlers
   private stopping = false
+  private disconnectReported = false
 
   public constructor(session: RoomSession, handlers: RoomHubHandlers) {
     this.handlers = handlers
@@ -35,18 +37,24 @@ export class RoomHubClient implements PeerSignaling {
       .withUrl(`/hubs/room?roomId=${encodeURIComponent(session.roomId)}`, {
         accessTokenFactory: () => session.credential,
       })
+      .configureLogging(LogLevel.Warning)
       .build()
 
     this.registerHandlers()
     this.connection.onclose(() => {
-      if (!this.stopping) {
-        this.handlers.onDisconnected()
-      }
+      this.reportUnexpectedDisconnect()
     })
   }
 
   public async start(): Promise<void> {
+    this.stopping = false
+    this.disconnectReported = false
     await this.connection.start()
+  }
+
+  public async disconnect(): Promise<void> {
+    await this.connection.stop()
+    this.reportUnexpectedDisconnect()
   }
 
   public async stop(): Promise<void> {
@@ -91,5 +99,14 @@ export class RoomHubClient implements PeerSignaling {
     this.connection.off(roomHubEvents.webRtcOffer, this.handlers.onWebRtcOffer)
     this.connection.off(roomHubEvents.webRtcAnswer, this.handlers.onWebRtcAnswer)
     this.connection.off(roomHubEvents.iceCandidate, this.handlers.onIceCandidate)
+  }
+
+  private reportUnexpectedDisconnect(): void {
+    if (this.stopping || this.disconnectReported) {
+      return
+    }
+
+    this.disconnectReported = true
+    this.handlers.onDisconnected()
   }
 }

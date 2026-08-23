@@ -25,37 +25,113 @@ export function PeerDevelopmentHarness() {
   const [hostSenderTrackState, setHostSenderTrackState] = useState<
     'not-created' | 'null' | 'attached'
   >('not-created')
+  const [peerActive, setPeerActive] = useState(false)
+  const [peerNeedsReset, setPeerNeedsReset] = useState(false)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const hubClientRef = useRef<RoomHubClient | null>(null)
   const peerControllerRef = useRef<WebRtcPeerController | null>(null)
   const webRtcSupported = isWebRtcPeerConnectionSupported()
 
-  const disposeRuntime = useCallback(async () => {
+  const installPeerController = useCallback(
+    (roomSession: RoomSession, hubClient: RoomHubClient) => {
+      if (!webRtcSupported) {
+        return
+      }
+
+      const controller = new WebRtcPeerController(roomSession.role, hubClient, {
+        onStatusChanged: (status) => {
+          setPeerStatus(status)
+          const currentController = peerControllerRef.current
+          setPeerActive(currentController?.hasActivePeer ?? false)
+          setPeerNeedsReset(currentController?.requiresResetBeforeRetry ?? false)
+          setHostSenderTrackState(
+            currentController?.hostSenderTrackState ?? 'not-created',
+          )
+        },
+        onSignalSendFailed: () => {
+          setPeerActive(false)
+          setPeerNeedsReset(true)
+          setHostSenderTrackState('not-created')
+          setMessage('A peer signal could not be sent. Reset the peer before retrying.')
+        },
+        onRecoveryNeeded: (reason) => {
+          setPeerActive(false)
+          setPeerNeedsReset(true)
+          setHostSenderTrackState('not-created')
+          setMessage(
+            reason === 'connection-failed'
+              ? 'The peer connection failed. Reset the peer before retrying.'
+              : 'The peer connection closed. Reset the peer before retrying.',
+          )
+        },
+      })
+
+      peerControllerRef.current = controller
+      setPeerStatus(initialPeerConnectionStatus)
+      setPeerActive(false)
+      setPeerNeedsReset(false)
+      setHostSenderTrackState('not-created')
+    },
+    [webRtcSupported],
+  )
+
+  const disposePeer = useCallback(() => {
     const peerController = peerControllerRef.current
+    peerControllerRef.current = null
+    peerController?.close()
+    setPeerActive(false)
+    setPeerNeedsReset(false)
+    setHostSenderTrackState('not-created')
+  }, [])
+
+  const disposeRuntime = useCallback(async () => {
     const hubClient = hubClientRef.current
 
-    peerControllerRef.current = null
+    disposePeer()
     hubClientRef.current = null
-    peerController?.close()
 
     if (hubClient !== null) {
       await hubClient.stop()
     }
-  }, [])
+  }, [disposePeer])
 
-  const applyPeerSignal = useCallback((operation: (peer: WebRtcPeerController) => Promise<void>) => {
-    const peerController = peerControllerRef.current
-    if (peerController === null) {
-      setMessage('This browser cannot process the peer signal.')
-      return
-    }
+  const resetPeerForOfflineParticipant = useCallback(
+    (participant: RoomPresenceParticipant, localRole: RoomSession['role']) => {
+      if (participant.connected || participant.role === localRole) {
+        return
+      }
 
-    void operation(peerController).catch(() => {
-      peerController.close()
-      setMessage('The peer signal could not be applied.')
-    })
-  }, [])
+      peerControllerRef.current?.resetPeer()
+      setPeerActive(false)
+      setPeerNeedsReset(false)
+      setHostSenderTrackState('not-created')
+      setMessage(`${participant.role} went offline. The peer was reset and can be retried.`)
+    },
+    [],
+  )
+
+  const applyPeerSignal = useCallback(
+    (operation: (peer: WebRtcPeerController) => Promise<void>) => {
+      const peerController = peerControllerRef.current
+      if (peerController === null) {
+        setMessage('This browser cannot process the peer signal.')
+        return
+      }
+
+      void operation(peerController).catch(() => {
+        setPeerActive(peerController.hasActivePeer)
+        setPeerNeedsReset(peerController.requiresResetBeforeRetry)
+        setHostSenderTrackState(peerController.hostSenderTrackState)
+        setMessage(
+          peerController.requiresResetBeforeRetry
+            ? 'The peer signal failed. Reset the peer before retrying.'
+            : 'The peer signal was rejected safely.',
+        )
+      })
+    },
+    [],
+  )
 
   const connectSession = useCallback(
     async (roomSession: RoomSession) => {
@@ -76,6 +152,7 @@ export function PeerDevelopmentHarness() {
               ? [...withoutParticipant, participant]
               : withoutParticipant
           })
+          resetPeerForOfflineParticipant(participant, roomSession.role)
         },
         onWebRtcOffer: (offer) => {
           applyPeerSignal((peer) => peer.handleOffer(offer))
@@ -87,38 +164,24 @@ export function PeerDevelopmentHarness() {
           applyPeerSignal((peer) => peer.handleRemoteIceCandidate(candidate))
         },
         onDisconnected: () => {
-          peerControllerRef.current?.close()
-          peerControllerRef.current = null
+          disposePeer()
           setHubStatus('disconnected')
           setPresence([])
-          setMessage('The Room Hub disconnected. Reset the harness to reconnect.')
+          setMessage('The Room Hub disconnected. Reconnect it or reset the session.')
         },
       }
 
       const hubClient = new RoomHubClient(roomSession, handlers)
       hubClientRef.current = hubClient
-
-      if (webRtcSupported) {
-        peerControllerRef.current = new WebRtcPeerController(roomSession.role, hubClient, {
-          onStatusChanged: (status) => {
-            setPeerStatus(status)
-            setHostSenderTrackState(
-              peerControllerRef.current?.hostSenderTrackState ?? 'not-created',
-            )
-          },
-          onSignalSendFailed: () => {
-            setMessage('A peer signal could not be sent because the Room Hub is unavailable.')
-          },
-        })
-      }
+      installPeerController(roomSession, hubClient)
 
       await hubClient.start()
       setHubStatus('connected')
     },
-    [applyPeerSignal, webRtcSupported],
+    [applyPeerSignal, disposePeer, installPeerController, resetPeerForOfflineParticipant],
   )
 
-  const resetHarness = useCallback(async () => {
+  const resetSession = useCallback(async () => {
     setBusy(true)
 
     try {
@@ -129,6 +192,8 @@ export function PeerDevelopmentHarness() {
       setHubStatus('disconnected')
       setPeerStatus(initialPeerConnectionStatus)
       setHostSenderTrackState('not-created')
+      setPeerActive(false)
+      setPeerNeedsReset(false)
       setMessage(null)
       setBusy(false)
     }
@@ -199,8 +264,79 @@ export function PeerDevelopmentHarness() {
 
     try {
       await peerController.startHostNegotiation(guestIsPresent)
+      setPeerActive(peerController.hasActivePeer)
+      setPeerNeedsReset(peerController.requiresResetBeforeRetry)
+      setHostSenderTrackState(peerController.hostSenderTrackState)
     } catch {
-      setMessage('The Host could not start peer negotiation.')
+      setPeerActive(peerController.hasActivePeer)
+      setPeerNeedsReset(peerController.requiresResetBeforeRetry)
+      setHostSenderTrackState(peerController.hostSenderTrackState)
+      setMessage(
+        peerController.requiresResetBeforeRetry
+          ? 'Peer negotiation failed. Reset the peer before retrying.'
+          : 'The Host could not start peer negotiation.',
+      )
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const resetPeerConnection = () => {
+    const peerController = peerControllerRef.current
+    if (peerController === null) {
+      return
+    }
+
+    peerController.resetPeer()
+    setPeerStatus({
+      ...initialPeerConnectionStatus,
+      connectionState: 'closed',
+      iceConnectionState: 'closed',
+      signalingState: 'closed',
+    })
+    setPeerActive(false)
+    setPeerNeedsReset(false)
+    setHostSenderTrackState('not-created')
+    setMessage('The peer was reset. The Room session and Hub connection were preserved.')
+  }
+
+  const disconnectHub = async () => {
+    const hubClient = hubClientRef.current
+    if (hubClient === null) {
+      return
+    }
+
+    setBusy(true)
+    setMessage(null)
+
+    try {
+      await hubClient.disconnect()
+    } catch {
+      setMessage('The Room Hub disconnect request failed.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const reconnectHub = async () => {
+    const hubClient = hubClientRef.current
+    if (hubClient === null || session === null) {
+      return
+    }
+
+    setBusy(true)
+    setMessage(null)
+    setHubStatus('connecting')
+    installPeerController(session, hubClient)
+
+    try {
+      await hubClient.start()
+      setHubStatus('connected')
+      setMessage('The Room Hub reconnected. Start a fresh peer negotiation when ready.')
+    } catch {
+      disposePeer()
+      setHubStatus('disconnected')
+      setMessage('The Room Hub could not reconnect. Retry or reset the session.')
     } finally {
       setBusy(false)
     }
@@ -222,11 +358,12 @@ export function PeerDevelopmentHarness() {
   const guestIsPresent = presence.some(
     (participant) => participant.role === 'Guest' && participant.connected,
   )
+
   return (
     <main className="peer-harness">
       <header>
         <h1>Duovie peer development harness</h1>
-        <p>Stage 4.1 transport handshake only. No media is captured or sent.</p>
+        <p>Stage 4 transport lifecycle only. No media is captured or sent.</p>
       </header>
 
       {!webRtcSupported && (
@@ -297,6 +434,7 @@ export function PeerDevelopmentHarness() {
                 <StateRow label="ICE connection" value={peerStatus.iceConnectionState} />
                 <StateRow label="ICE gathering" value={peerStatus.iceGatheringState} />
                 <StateRow label="Signaling" value={peerStatus.signalingState} />
+                <StateRow label="Retry state" value={peerNeedsReset ? 'reset required' : 'ready'} />
                 {session.role === 'Host' && (
                   <StateRow label="Video sender track" value={hostSenderTrackState} />
                 )}
@@ -308,14 +446,39 @@ export function PeerDevelopmentHarness() {
             {session.role === 'Host' && (
               <button
                 type="button"
-                disabled={busy || hubStatus !== 'connected' || !guestIsPresent || !webRtcSupported}
+                disabled={
+                  busy ||
+                  hubStatus !== 'connected' ||
+                  !guestIsPresent ||
+                  !webRtcSupported ||
+                  peerActive ||
+                  peerNeedsReset
+                }
                 onClick={() => void startPeerConnection()}
               >
                 Start P2P
               </button>
             )}
-            <button type="button" disabled={busy} onClick={() => void resetHarness()}>
-              Reset
+            {hubStatus === 'connected' ? (
+              <>
+                <button
+                  type="button"
+                  disabled={busy || !webRtcSupported}
+                  onClick={resetPeerConnection}
+                >
+                  Reset Peer
+                </button>
+                <button type="button" disabled={busy} onClick={() => void disconnectHub()}>
+                  Disconnect Hub
+                </button>
+              </>
+            ) : (
+              <button type="button" disabled={busy} onClick={() => void reconnectHub()}>
+                Reconnect Hub
+              </button>
+            )}
+            <button type="button" disabled={busy} onClick={() => void resetSession()}>
+              Reset Session
             </button>
           </div>
         </section>

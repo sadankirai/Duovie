@@ -52,7 +52,7 @@ The authenticated Room Hub also relays ephemeral WebRTC signaling: the Host send
 
 Each reconnect is a new authenticated Hub connection: the client resubmits the Room Id and participant credential, and the server revalidates the session and Room before restoring trusted identity, groups, presence, and a fresh snapshot. The final live connection disconnecting emits offline immediately; another live duplicate prevents a false offline transition, and no reconnect grace timer is used. Established connections are not continuously revalidated as time advances, but reconnect fails after session expiry or Room closure/expiry. Chat and signaling remain ephemeral and are never replayed after reconnect.
 
-## Stage 4.1 peer development harness
+## Stage 4 peer development harness
 
 Start PostgreSQL and the API as described above with the `https` launch profile. The repository uses `https://127.0.0.1:7245` for this local profile. In another terminal, start Vite so its same-origin development proxy can forward both HTTP API traffic and Room Hub WebSockets. The proxy accepts only the local development certificate; this does not alter production TLS behavior. If that port is unavailable, override both the API launch URL and the proxy's `DUOVIE_API_ORIGIN` locally.
 
@@ -65,11 +65,32 @@ cd frontend
 npm run dev
 ```
 
-Open `/dev/peer` in two current desktop browser tabs. In the Host tab, create a Room and copy only its displayed Room ID. In the Guest tab, enter that Room ID and join. Both actions connect their server-issued participant session to the Room Hub; the opaque participant credential is held in memory only and disappears on reset, teardown, or refresh. It is never displayed or copied.
+Open `/dev/peer` in two current desktop browser tabs. In the Host tab, create a Room and copy only its displayed Room ID. In the Guest tab, enter that Room ID and join. Both actions connect their server-issued participant session to the Room Hub. The opaque participant credential is held in memory only; it is never displayed, copied, or persisted. SignalR client logging starts at Warning so its successful WebSocket URL information message cannot place the conventional `access_token` query value in the browser console.
 
-After both roles show online, the Host can select **Start P2P**. The Host creates one trackless, `sendonly` video transceiver and a real browser Offer; the Guest applies it and creates the Answer; and both browsers relay real ICE candidates through SignalR. The status panel distinguishes Hub connectivity from WebRTC connection, ICE, gathering, and signaling state. Reset closes the peer and Hub and clears the in-memory session.
+After both roles show online, the Host can select **Start P2P**. The Host creates one trackless, `sendonly` video transceiver and a real browser Offer; the Guest applies it and creates the Answer; and both browsers relay real ICE candidates through SignalR. The status panel distinguishes Hub connectivity from WebRTC connection, ICE, gathering, and signaling state.
 
-This harness proves only the trackless peer transport foundation. It does not request camera, microphone, or screen permission and carries no media. `iceServers` is intentionally empty, so same-machine connectivity is the Task 4.1 target; STUN/TURN and NAT reliability belong to Stage 6.
+One negotiation attempt is active at a time. Setup or signaling failure disposes that peer and requires the explicit **Reset Peer** action before retry. Reset Peer clears queued ICE and creates no replacement automatically; it preserves the Room session and connected Hub, so both tabs can reset and the Host can start a fresh generation without recreating the Room. Duplicate or wrong-state SDP fails safely. Generation guards prevent callbacks and async continuations owned by an old peer from sending for a replacement peer. The Stage 4 one-negotiation protocol has no negotiation identifier, so both participants must reset before a deliberate retry; multi-negotiation generation identifiers belong to a later design if renegotiation is introduced.
+
+Peer `failed` or `closed` state disposes the active peer and requires Reset Peer. `disconnected` remains visible and may recover naturally; Stage 4 adds no timer, ICE restart, automatic renegotiation, or automatic peer retry. A final logical offline presence event for the opposite role resets the peer, while Stage 3 duplicate-connection presence semantics prevent a non-final disconnect from causing teardown.
+
+An unexpected or harness-requested Hub disconnect permanently closes its peer controller and clears pending ICE. **Reconnect Hub** is explicit rather than automatic and installs a fresh controller after the server revalidates the retained participant session. The Room ID and opaque credential remain only in that tab's memory while this reconnect option is shown. **Reset Session**, refresh, teardown, or session replacement stops the Hub and removes that in-memory session and credential.
+
+This harness proves only the trackless peer transport foundation. It does not request camera, microphone, or screen permission and carries no media. The Host sender track remains `null`; no data channel is created. `iceServers` is intentionally empty, so same-machine connectivity is the Stage 4 target; STUN/TURN, NAT reliability, and ICE restart belong to Stage 6.
+
+### Stage 4 browser verification
+
+Task 4.2 verification on 2026-08-23 had only the Codex in-app browser automation surface available. That real browser surface completed Host-to-Guest same-machine P2P three times: initial connection, peer-only reset/retry in the same Room, and explicit Guest Hub disconnect/reconnect followed by a fresh connection. Each final peer state was `connected`, ICE was `connected`, signaling was `stable`, the Host sender track was `null`, no permission prompt appeared, and the corrected console contained no warning, error, credential, SDP, or ICE payload.
+
+| Matrix case | Result |
+| --- | --- |
+| Codex in-app browser Host -> Codex in-app browser Guest | EXECUTED — connected; peer reset/retry and Hub disconnect/reconnect passed. This is recorded separately and is not labeled Chrome. |
+| Chrome Host -> Chrome Guest | NOT EXECUTED — Chrome was not exposed to this automation environment. |
+| Edge Host -> Edge Guest | NOT EXECUTED — Edge was not exposed to this automation environment. |
+| Safari Host -> Safari Guest | NOT EXECUTED — Safari was not exposed to this automation environment. |
+| Chrome Host -> Safari Guest | NOT EXECUTED — Chrome and Safari were not exposed to this automation environment. |
+| Safari Host -> Chrome Guest | NOT EXECUTED — Safari and Chrome were not exposed to this automation environment. |
+
+For each unexecuted row, run the same short human check: open `/dev/peer` in a Host tab in the browser before the arrow and a Guest tab in the browser after it; create and join one Room; confirm both roles online; select Start P2P; record connection, ICE, and signaling states plus console warnings/errors and permission prompts; select Reset Peer in both tabs and retry; then disconnect the Guest Hub, confirm Host peer cleanup, reconnect it explicitly, and establish a fresh peer. The expected final states are `connected` / `connected` / `stable`, Host sender track `null`, no permission prompt, and no sensitive console output.
 
 ## Database migrations
 
