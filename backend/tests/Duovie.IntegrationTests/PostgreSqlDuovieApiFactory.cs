@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 
 namespace Duovie.IntegrationTests;
 
@@ -18,17 +19,20 @@ public sealed class PostgreSqlDuovieApiFactory : WebApplicationFactory<Program>
     private readonly string _connectionString;
     private readonly TwoRoomLoadCoordinator? _roomLoadCoordinator;
     private readonly bool _failRoomSave;
+    private readonly ILoggerProvider? _loggerProvider;
 
     public PostgreSqlDuovieApiFactory(
         string connectionString,
         bool coordinateTwoRoomLoads = false,
-        bool failRoomSave = false)
+        bool failRoomSave = false,
+        ILoggerProvider? loggerProvider = null)
     {
         _connectionString = connectionString;
         _roomLoadCoordinator = coordinateTwoRoomLoads
             ? new TwoRoomLoadCoordinator()
             : null;
         _failRoomSave = failRoomSave;
+        _loggerProvider = loggerProvider;
     }
 
     public static DateTimeOffset UtcNow { get; } =
@@ -40,6 +44,12 @@ public sealed class PostgreSqlDuovieApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("ConnectionStrings:DefaultConnection", _connectionString);
         builder.UseSetting("ParticipantSessions:Lifetime", SessionLifetime);
         builder.UseSetting("Rooms:Lifetime", RoomLifetime);
+
+        if (_loggerProvider is not null)
+        {
+            builder.ConfigureLogging(logging => logging.AddProvider(_loggerProvider));
+        }
+
         builder.ConfigureAppConfiguration((_, configuration) =>
         {
             configuration.Sources.Clear();

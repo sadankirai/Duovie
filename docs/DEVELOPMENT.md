@@ -40,6 +40,12 @@ The API exposes `GET /health/live` for process liveness and `GET /health/ready` 
 
 These endpoints accept no participant identity, role, or credential input. Successful responses include a bearer-style participant credential in the response body and use `Cache-Control: no-store`; clients must treat that credential as sensitive. A Room Id identifies the Room but grants no participant or Host authority. Room closure is not exposed because the canonical product rules do not yet define who may close a Room.
 
+## Room realtime presence
+
+`/hubs/room` is the SignalR endpoint for authorized Room presence. Clients provide the intended Room Id as connection metadata and use SignalR's conventional access-token transport for the existing participant credential. SignalR may send that credential as a bearer header or as its standard `access_token` query value for browser WebSocket and Server-Sent Events transports; it is accepted only by the Room Hub, never persisted or logged, and is not a JWT. HTTPS is mandatory for production credential transport. Duovie suppresses only the default ASP.NET Core Hosting Information-level request URL logs that could expose query tokens; production reverse proxies and hosting-platform access logs must likewise be configured not to record sensitive query values.
+
+The Hub validates the credential against the intended Room before deriving the trusted participant identity, adding its Room-scoped group membership, or publishing presence. It rejects missing, malformed, expired, wrong-Room, closed-Room, and expired-Room connections without broadcasting credentials or persistence data. Presence is an API-runtime-only, single-instance registry: multiple live connections for one participant remain one logical online presence until the final connection disconnects. It is not persisted and will require coordinated presence/backplane design before multi-instance deployment.
+
 ## Database migrations
 
 Restore the repository-pinned EF Core tool before creating or applying migrations:
