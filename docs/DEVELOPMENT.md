@@ -48,6 +48,8 @@ The Hub validates the credential against the intended Room before deriving the t
 
 The same trusted Hub identity authorizes ephemeral Room chat. Clients send plain text only; the server trims only its outer whitespace, rejects empty input, and enforces a 2,000 UTF-16-character maximum after trimming. The server generates the message identifier, sender identity, role, and UTC timestamp. Message contents must not be logged. Messages are neither stored nor replayed to later connections. The future React client must render this plain-text payload as text rather than injected HTML.
 
+The authenticated Room Hub also relays ephemeral WebRTC signaling: the Host sends Offers to the Guest, the Guest sends Answers to the Host, and both roles exchange ICE candidates. Sender identity and the opposite-role destination are derived by the server from the trusted connection; clients cannot select either. SDP and ICE content are bounded, are not persisted or replayed, and must not be logged because candidates may disclose network information. This relay creates no peer connection and carries no media; browser `RTCPeerConnection` work begins in Stage 4.
+
 ## Database migrations
 
 Restore the repository-pinned EF Core tool before creating or applying migrations:

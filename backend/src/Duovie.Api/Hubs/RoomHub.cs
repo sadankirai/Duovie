@@ -72,6 +72,10 @@ public sealed class RoomHub(
 
         Context.Items[ConnectionIdentityItemKey] = identity;
         await Groups.AddToGroupAsync(Context.ConnectionId, groupName, Context.ConnectionAborted);
+        await Groups.AddToGroupAsync(
+            Context.ConnectionId,
+            GetRoomRoleGroupName(identity.RoomId, identity.Role),
+            Context.ConnectionAborted);
 
         var becameOnline = _presenceRegistry.Add(identity, Context.ConnectionId);
         var snapshot = new RoomPresenceSnapshot(_presenceRegistry.GetSnapshot(identity.RoomId));
@@ -110,7 +114,7 @@ public sealed class RoomHub(
     public async Task SendChatMessage(string? text)
     {
         var normalizedText = NormalizeChatText(text);
-        var identity = GetConnectionIdentity();
+        var identity = GetConnectionIdentity(RoomChatMessage.InvalidMessageError);
         var message = new RoomChatMessage(
             Guid.NewGuid(),
             identity.ParticipantId,
@@ -122,6 +126,81 @@ public sealed class RoomHub(
             RoomChatEvents.Message,
             message,
             Context.ConnectionAborted);
+    }
+
+    public async Task SendWebRtcOffer(string? sdp)
+    {
+        var identity = GetConnectionIdentity(RoomWebRtcSignalingRules.InvalidSignalError);
+        EnsureRole(identity, ParticipantRole.Host);
+        var validatedSdp = ValidateRequiredOpaqueSignal(
+            sdp,
+            RoomWebRtcSignalingRules.MaximumSdpLength);
+        var offer = new RoomWebRtcOffer(
+            identity.ParticipantId,
+            identity.Role.ToString(),
+            validatedSdp);
+
+        await Clients.Group(GetRoomRoleGroupName(identity.RoomId, ParticipantRole.Guest)).SendAsync(
+            RoomWebRtcEvents.Offer,
+            offer,
+            Context.ConnectionAborted);
+    }
+
+    public async Task SendWebRtcAnswer(string? sdp)
+    {
+        var identity = GetConnectionIdentity(RoomWebRtcSignalingRules.InvalidSignalError);
+        EnsureRole(identity, ParticipantRole.Guest);
+        var validatedSdp = ValidateRequiredOpaqueSignal(
+            sdp,
+            RoomWebRtcSignalingRules.MaximumSdpLength);
+        var answer = new RoomWebRtcAnswer(
+            identity.ParticipantId,
+            identity.Role.ToString(),
+            validatedSdp);
+
+        await Clients.Group(GetRoomRoleGroupName(identity.RoomId, ParticipantRole.Host)).SendAsync(
+            RoomWebRtcEvents.Answer,
+            answer,
+            Context.ConnectionAborted);
+    }
+
+    public async Task SendIceCandidate(
+        string? candidate,
+        string? sdpMid,
+        int? sdpMLineIndex,
+        string? usernameFragment)
+    {
+        var identity = GetConnectionIdentity(RoomWebRtcSignalingRules.InvalidSignalError);
+        var validatedCandidate = ValidateRequiredOpaqueSignal(
+            candidate,
+            RoomWebRtcSignalingRules.MaximumCandidateLength);
+        var validatedSdpMid = ValidateOptionalOpaqueSignal(
+            sdpMid,
+            RoomWebRtcSignalingRules.MaximumSdpMidLength);
+        var validatedUsernameFragment = ValidateOptionalOpaqueSignal(
+            usernameFragment,
+            RoomWebRtcSignalingRules.MaximumUsernameFragmentLength);
+
+        if (sdpMLineIndex < 0)
+        {
+            throw new HubException(RoomWebRtcSignalingRules.InvalidSignalError);
+        }
+
+        var iceCandidate = new RoomIceCandidate(
+            identity.ParticipantId,
+            identity.Role.ToString(),
+            validatedCandidate,
+            validatedSdpMid,
+            sdpMLineIndex,
+            validatedUsernameFragment);
+
+        await Clients.Group(GetRoomRoleGroupName(
+                identity.RoomId,
+                GetOppositeRole(identity.Role)))
+            .SendAsync(
+                RoomWebRtcEvents.IceCandidate,
+                iceCandidate,
+                Context.ConnectionAborted);
     }
 
     private static Guid? TryGetRoomId(HttpRequest? request)
@@ -138,7 +217,7 @@ public sealed class RoomHub(
         return roomId;
     }
 
-    private RoomHubConnectionIdentity GetConnectionIdentity()
+    private RoomHubConnectionIdentity GetConnectionIdentity(string errorMessage)
     {
         if (Context.Items.TryGetValue(ConnectionIdentityItemKey, out var value)
             && value is RoomHubConnectionIdentity identity)
@@ -146,7 +225,44 @@ public sealed class RoomHub(
             return identity;
         }
 
-        throw new HubException(RoomChatMessage.InvalidMessageError);
+        throw new HubException(errorMessage);
+    }
+
+    private static void EnsureRole(
+        RoomHubConnectionIdentity identity,
+        ParticipantRole requiredRole)
+    {
+        if (identity.Role != requiredRole)
+        {
+            throw new HubException(RoomWebRtcSignalingRules.InvalidSignalError);
+        }
+    }
+
+    private static string ValidateRequiredOpaqueSignal(string? value, int maximumLength)
+    {
+        if (string.IsNullOrEmpty(value)
+            || string.IsNullOrWhiteSpace(value)
+            || value.Length > maximumLength)
+        {
+            throw new HubException(RoomWebRtcSignalingRules.InvalidSignalError);
+        }
+
+        return value;
+    }
+
+    private static string? ValidateOptionalOpaqueSignal(string? value, int maximumLength)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(value) || value.Length > maximumLength)
+        {
+            throw new HubException(RoomWebRtcSignalingRules.InvalidSignalError);
+        }
+
+        return value;
     }
 
     private static string NormalizeChatText(string? text)
@@ -187,5 +303,27 @@ public sealed class RoomHub(
     private static string GetRoomGroupName(Guid roomId)
     {
         return $"room:{roomId:N}";
+    }
+
+    private static string GetRoomRoleGroupName(Guid roomId, ParticipantRole role)
+    {
+        var roleName = role switch
+        {
+            ParticipantRole.Host => "host",
+            ParticipantRole.Guest => "guest",
+            _ => throw new ArgumentOutOfRangeException(nameof(role)),
+        };
+
+        return $"room:{roomId:N}:{roleName}";
+    }
+
+    private static ParticipantRole GetOppositeRole(ParticipantRole role)
+    {
+        return role switch
+        {
+            ParticipantRole.Host => ParticipantRole.Guest,
+            ParticipantRole.Guest => ParticipantRole.Host,
+            _ => throw new ArgumentOutOfRangeException(nameof(role)),
+        };
     }
 }
