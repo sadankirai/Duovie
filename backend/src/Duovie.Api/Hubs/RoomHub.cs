@@ -107,6 +107,23 @@ public sealed class RoomHub(
         await base.OnDisconnectedAsync(exception);
     }
 
+    public async Task SendChatMessage(string? text)
+    {
+        var normalizedText = NormalizeChatText(text);
+        var identity = GetConnectionIdentity();
+        var message = new RoomChatMessage(
+            Guid.NewGuid(),
+            identity.ParticipantId,
+            identity.Role.ToString(),
+            normalizedText,
+            _timeProvider.GetUtcNow());
+
+        await Clients.Group(GetRoomGroupName(identity.RoomId)).SendAsync(
+            RoomChatEvents.Message,
+            message,
+            Context.ConnectionAborted);
+    }
+
     private static Guid? TryGetRoomId(HttpRequest? request)
     {
         if (request is null
@@ -119,6 +136,30 @@ public sealed class RoomHub(
         }
 
         return roomId;
+    }
+
+    private RoomHubConnectionIdentity GetConnectionIdentity()
+    {
+        if (Context.Items.TryGetValue(ConnectionIdentityItemKey, out var value)
+            && value is RoomHubConnectionIdentity identity)
+        {
+            return identity;
+        }
+
+        throw new HubException(RoomChatMessage.InvalidMessageError);
+    }
+
+    private static string NormalizeChatText(string? text)
+    {
+        var normalizedText = text?.Trim();
+
+        if (string.IsNullOrEmpty(normalizedText)
+            || normalizedText.Length > RoomChatMessage.MaximumTextLength)
+        {
+            throw new HubException(RoomChatMessage.InvalidMessageError);
+        }
+
+        return normalizedText;
     }
 
     private static string? GetParticipantCredential(HttpRequest? request)

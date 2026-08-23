@@ -1,8 +1,10 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using Duovie.Api.Hubs;
 using Duovie.Api.Realtime;
 using Duovie.Application.ParticipantSessions;
 using Duovie.Domain.Rooms;
+using Microsoft.AspNetCore.SignalR;
 using Duovie.Infrastructure.Persistence.Repositories;
 using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -17,6 +19,181 @@ namespace Duovie.IntegrationTests;
 public sealed class RoomHubIntegrationTests(PostgreSqlFixture fixture)
 {
     private static readonly TimeSpan EventTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan NoEventTimeout = TimeSpan.FromMilliseconds(500);
+
+    [Fact]
+    public async Task Host_and_Guest_receive_canonical_server_generated_chat_messages()
+    {
+        using var factory = new PostgreSqlDuovieApiFactory(fixture.ConnectionString);
+        using var client = CreateHttpClient(factory);
+        var host = await CreateRoomAsync(client);
+        var guest = await JoinRoomAsync(client, host.RoomId);
+        await using var hostConnection = CreateHubConnection(factory, host.RoomId, host.Credential);
+        await using var guestConnection = CreateHubConnection(factory, host.RoomId, guest.Credential);
+        var hostReceivedHostMessage = ReceiveChatMessageAsync(hostConnection);
+        var guestReceivedHostMessage = ReceiveChatMessageAsync(guestConnection);
+
+        await StartAndReceiveSnapshotAsync(hostConnection);
+        await StartAndReceiveSnapshotAsync(guestConnection);
+
+        const string hostText = "  Hello, Guest!\nMovie starts soon. 🎬  ";
+        await hostConnection.InvokeAsync("SendChatMessage", hostText);
+
+        var hostMessage = await hostReceivedHostMessage;
+        var guestMessage = await guestReceivedHostMessage;
+
+        AssertCanonicalChatMessage(
+            hostMessage,
+            host.ParticipantId,
+            "Host",
+            "Hello, Guest!\nMovie starts soon. 🎬",
+            host.Credential,
+            guest.Credential);
+        Assert.Equal(hostMessage, guestMessage);
+
+        var hostReceivedGuestMessage = ReceiveChatMessageAsync(hostConnection);
+        var guestReceivedGuestMessage = ReceiveChatMessageAsync(guestConnection);
+        const string guestText = "I am the Host now";
+
+        await guestConnection.InvokeAsync("SendChatMessage", guestText);
+
+        var hostReceived = await hostReceivedGuestMessage;
+        var guestReceived = await guestReceivedGuestMessage;
+
+        AssertCanonicalChatMessage(
+            hostReceived,
+            guest.ParticipantId,
+            "Guest",
+            guestText,
+            host.Credential,
+            guest.Credential);
+        Assert.Equal(hostReceived, guestReceived);
+        Assert.NotEqual(host.ParticipantId, hostReceived.ParticipantId);
+        Assert.NotEqual("Host", hostReceived.Role);
+    }
+
+    [Fact]
+    public async Task Chat_is_Room_scoped_and_the_Hub_accepts_only_text()
+    {
+        using var factory = new PostgreSqlDuovieApiFactory(fixture.ConnectionString);
+        using var client = CreateHttpClient(factory);
+        var firstRoomHost = await CreateRoomAsync(client);
+        var firstRoomGuest = await JoinRoomAsync(client, firstRoomHost.RoomId);
+        var secondRoomHost = await CreateRoomAsync(client);
+        await using var firstRoomHostConnection = CreateHubConnection(
+            factory,
+            firstRoomHost.RoomId,
+            firstRoomHost.Credential);
+        await using var firstRoomGuestConnection = CreateHubConnection(
+            factory,
+            firstRoomHost.RoomId,
+            firstRoomGuest.Credential);
+        await using var secondRoomConnection = CreateHubConnection(
+            factory,
+            secondRoomHost.RoomId,
+            secondRoomHost.Credential);
+        var firstRoomReceived = ReceiveChatMessageAsync(firstRoomGuestConnection);
+        var secondRoomReceived = new TaskCompletionSource<RoomChatMessage>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        secondRoomConnection.On<RoomChatMessage>(
+            RoomChatEvents.Message,
+            message => secondRoomReceived.TrySetResult(message));
+
+        await StartAndReceiveSnapshotAsync(firstRoomHostConnection);
+        await StartAndReceiveSnapshotAsync(firstRoomGuestConnection);
+        await StartAndReceiveSnapshotAsync(secondRoomConnection);
+
+        await firstRoomHostConnection.InvokeAsync("SendChatMessage", "Only Room A receives this.");
+
+        var received = await firstRoomReceived;
+        Assert.Equal(firstRoomHost.ParticipantId, received.ParticipantId);
+        await AssertNoChatMessageAsync(secondRoomReceived);
+
+        var sendMethod = typeof(RoomHub).GetMethod(nameof(RoomHub.SendChatMessage));
+        Assert.NotNull(sendMethod);
+        var parameters = sendMethod.GetParameters();
+        var textParameter = Assert.Single(parameters);
+        Assert.Equal(typeof(string), textParameter.ParameterType);
+    }
+
+    [Fact]
+    public async Task Invalid_chat_text_is_rejected_without_broadcasting_or_disconnecting_the_sender()
+    {
+        using var factory = new PostgreSqlDuovieApiFactory(fixture.ConnectionString);
+        using var client = CreateHttpClient(factory);
+        var host = await CreateRoomAsync(client);
+        var guest = await JoinRoomAsync(client, host.RoomId);
+        await using var hostConnection = CreateHubConnection(factory, host.RoomId, host.Credential);
+        await using var guestConnection = CreateHubConnection(factory, host.RoomId, guest.Credential);
+        var guestReceived = new TaskCompletionSource<RoomChatMessage>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        guestConnection.On<RoomChatMessage>(
+            RoomChatEvents.Message,
+            message => guestReceived.TrySetResult(message));
+
+        await StartAndReceiveSnapshotAsync(hostConnection);
+        await StartAndReceiveSnapshotAsync(guestConnection);
+
+        foreach (var invalidText in new string?[]
+                 {
+                     null,
+                     string.Empty,
+                     " \t\r\n ",
+                     new string('x', RoomChatMessage.MaximumTextLength + 1),
+                 })
+        {
+            await AssertChatRejectedAsync(hostConnection, invalidText);
+        }
+
+        await AssertNoChatMessageAsync(guestReceived);
+
+        var boundaryText = new string('x', RoomChatMessage.MaximumTextLength);
+        await hostConnection.InvokeAsync("SendChatMessage", boundaryText);
+        var message = await guestReceived.Task.WaitAsync(EventTimeout);
+
+        AssertCanonicalChatMessage(
+            message,
+            host.ParticipantId,
+            "Host",
+            boundaryText,
+            host.Credential,
+            guest.Credential);
+    }
+
+    [Fact]
+    public async Task Chat_from_one_duplicate_connection_is_broadcast_once_to_each_Room_connection()
+    {
+        using var factory = new PostgreSqlDuovieApiFactory(fixture.ConnectionString);
+        using var client = CreateHttpClient(factory);
+        var host = await CreateRoomAsync(client);
+        var guest = await JoinRoomAsync(client, host.RoomId);
+        await using var firstHostConnection = CreateHubConnection(factory, host.RoomId, host.Credential);
+        await using var secondHostConnection = CreateHubConnection(factory, host.RoomId, host.Credential);
+        await using var guestConnection = CreateHubConnection(factory, host.RoomId, guest.Credential);
+        var firstHostReceived = ReceiveChatMessageAsync(firstHostConnection);
+        var secondHostReceived = ReceiveChatMessageAsync(secondHostConnection);
+        var guestReceived = ReceiveChatMessageAsync(guestConnection);
+
+        await StartAndReceiveSnapshotAsync(firstHostConnection);
+        await StartAndReceiveSnapshotAsync(secondHostConnection);
+        await StartAndReceiveSnapshotAsync(guestConnection);
+
+        await firstHostConnection.InvokeAsync("SendChatMessage", "One message for every connection.");
+
+        var firstHostMessage = await firstHostReceived;
+        var secondHostMessage = await secondHostReceived;
+        var guestMessage = await guestReceived;
+
+        Assert.Equal(firstHostMessage, secondHostMessage);
+        Assert.Equal(firstHostMessage, guestMessage);
+        AssertCanonicalChatMessage(
+            firstHostMessage,
+            host.ParticipantId,
+            "Host",
+            "One message for every connection.",
+            host.Credential,
+            guest.Credential);
+    }
 
     [Fact]
     public async Task Host_and_Guest_connect_with_server_derived_identity_and_observe_each_others_presence()
@@ -329,6 +506,48 @@ public sealed class RoomHubIntegrationTests(PostgreSqlFixture fixture)
         return await snapshotReceived.Task.WaitAsync(EventTimeout);
     }
 
+    private static Task<RoomChatMessage> ReceiveChatMessageAsync(HubConnection connection)
+    {
+        var messageReceived = new TaskCompletionSource<RoomChatMessage>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.On<RoomChatMessage>(
+            RoomChatEvents.Message,
+            message => messageReceived.TrySetResult(message));
+
+        return messageReceived.Task.WaitAsync(EventTimeout);
+    }
+
+    private static async Task AssertChatRejectedAsync(HubConnection connection, string? text)
+    {
+        var exception = await Assert.ThrowsAsync<HubException>(
+            () => connection.InvokeAsync("SendChatMessage", text));
+
+        Assert.StartsWith(
+            "An unexpected error occurred invoking 'SendChatMessage' on the server.",
+            exception.Message,
+            StringComparison.Ordinal);
+        Assert.EndsWith(
+            $"HubException: {RoomChatMessage.InvalidMessageError}",
+            exception.Message,
+            StringComparison.Ordinal);
+
+        if (!string.IsNullOrEmpty(text))
+        {
+            Assert.False(
+                exception.Message.Contains(text, StringComparison.Ordinal),
+                "The client-visible chat validation error contained rejected input.");
+        }
+    }
+
+    private static async Task AssertNoChatMessageAsync(
+        TaskCompletionSource<RoomChatMessage> messageReceived)
+    {
+        var completed = await Task.WhenAny(messageReceived.Task, Task.Delay(NoEventTimeout));
+
+        Assert.NotSame(messageReceived.Task, completed);
+        Assert.False(messageReceived.Task.IsCompletedSuccessfully);
+    }
+
     private static async Task AssertRejectedAsync(HubConnection connection)
     {
         var snapshotReceived = new TaskCompletionSource<RoomPresenceSnapshot>(
@@ -419,6 +638,37 @@ public sealed class RoomHubIntegrationTests(PostgreSqlFixture fixture)
         Assert.False(
             content.Contains(credential, StringComparison.Ordinal),
             "A safe presence payload contained the participant credential.");
+    }
+
+    private static void AssertCanonicalChatMessage(
+        RoomChatMessage message,
+        Guid participantId,
+        string role,
+        string text,
+        params string[] credentials)
+    {
+        Assert.NotEqual(Guid.Empty, message.MessageId);
+        Assert.Equal(participantId, message.ParticipantId);
+        Assert.Equal(role, message.Role);
+        Assert.Equal(text, message.Text);
+        Assert.Equal(PostgreSqlDuovieApiFactory.UtcNow, message.SentAtUtc);
+
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(message));
+        var propertyNames = document.RootElement
+            .EnumerateObject()
+            .Select(property => property.Name)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(
+            new[] { "MessageId", "ParticipantId", "Role", "SentAtUtc", "Text" },
+            propertyNames);
+
+        var payload = document.RootElement.GetRawText();
+        foreach (var credential in credentials)
+        {
+            AssertCredentialAbsent(credential, payload);
+        }
     }
 
     private sealed record RoomSession(Guid RoomId, Guid ParticipantId, string Credential);
