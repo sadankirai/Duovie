@@ -50,6 +50,8 @@ The same trusted Hub identity authorizes ephemeral Room chat. Clients send plain
 
 The authenticated Room Hub also relays ephemeral WebRTC signaling: the Host sends Offers to the Guest, the Guest sends Answers to the Host, and both roles exchange ICE candidates. Sender identity and the opposite-role destination are derived by the server from the trusted connection; clients cannot select either. SDP and ICE content are bounded, are not persisted or replayed, and must not be logged because candidates may disclose network information. This relay creates no peer connection and carries no media; browser `RTCPeerConnection` work begins in Stage 4.
 
+Each reconnect is a new authenticated Hub connection: the client resubmits the Room Id and participant credential, and the server revalidates the session and Room before restoring trusted identity, groups, presence, and a fresh snapshot. The final live connection disconnecting emits offline immediately; another live duplicate prevents a false offline transition, and no reconnect grace timer is used. Established connections are not continuously revalidated as time advances, but reconnect fails after session expiry or Room closure/expiry. Chat and signaling remain ephemeral and are never replayed after reconnect.
+
 ## Database migrations
 
 Restore the repository-pinned EF Core tool before creating or applying migrations:

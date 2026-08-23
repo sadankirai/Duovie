@@ -36,6 +36,8 @@ Task 0.1 is documentation only. It does not create applications, packages, Docke
 
 ## Stage 3 — SignalR & Realtime Chat
 
+**Status:** Realtime communication verification completed (Task 3.4).
+
 **Objective:** establish realtime room communication.  
 **Scope:** hub infrastructure, presence, chat, join/leave events, reconnect behavior.  
 **Non-goal:** persisted chat history.  

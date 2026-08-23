@@ -20,12 +20,14 @@ public sealed class PostgreSqlDuovieApiFactory : WebApplicationFactory<Program>
     private readonly TwoRoomLoadCoordinator? _roomLoadCoordinator;
     private readonly bool _failRoomSave;
     private readonly ILoggerProvider? _loggerProvider;
+    private readonly TimeProvider _timeProvider;
 
     public PostgreSqlDuovieApiFactory(
         string connectionString,
         bool coordinateTwoRoomLoads = false,
         bool failRoomSave = false,
-        ILoggerProvider? loggerProvider = null)
+        ILoggerProvider? loggerProvider = null,
+        TimeProvider? timeProvider = null)
     {
         _connectionString = connectionString;
         _roomLoadCoordinator = coordinateTwoRoomLoads
@@ -33,6 +35,7 @@ public sealed class PostgreSqlDuovieApiFactory : WebApplicationFactory<Program>
             : null;
         _failRoomSave = failRoomSave;
         _loggerProvider = loggerProvider;
+        _timeProvider = timeProvider ?? new FixedTimeProvider(UtcNow);
     }
 
     public static DateTimeOffset UtcNow { get; } =
@@ -67,7 +70,7 @@ public sealed class PostgreSqlDuovieApiFactory : WebApplicationFactory<Program>
             services.RemoveAll<DbContextOptions<DuovieDbContext>>();
             services.AddDbContext<DuovieDbContext>(options => options.UseNpgsql(_connectionString));
             services.RemoveAll<TimeProvider>();
-            services.AddSingleton<TimeProvider>(new FixedTimeProvider(UtcNow));
+            services.AddSingleton(_timeProvider);
 
             if (_roomLoadCoordinator is not null || _failRoomSave)
             {
