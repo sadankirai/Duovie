@@ -385,28 +385,137 @@ describe('RoomRuntime automatic Hub recovery', () => {
   })
 })
 
+describe('RoomRuntime ICE server provisioning', () => {
+  const iceServers: RTCIceServer[] = [
+    { urls: ['stun:stun.example.com:3478'] },
+    { urls: ['turn:turn.example.com:3478'], username: 'u', credential: 'c' },
+  ]
+
+  it('fetches ICE configuration once and passes it to the first Host peer', async () => {
+    const fixture = createFixture(
+      hostSession,
+      [hostPresence, guestPresence],
+      0,
+      iceServers,
+    )
+
+    await fixture.runtime.start()
+
+    expect(fixture.iceServersRequestCount).toBe(1)
+    expect(fixture.peerIceServers).toEqual([iceServers])
+  })
+
+  it('passes the configured ICE configuration to a fresh Guest peer', async () => {
+    const fixture = createFixture(
+      guestSession,
+      [hostPresence, guestPresence],
+      0,
+      iceServers,
+    )
+    await fixture.runtime.start()
+
+    fixture.hub.emitOffer(hostOffer())
+    await vi.waitFor(() => expect(fixture.peers).toHaveLength(1))
+
+    expect(fixture.peerIceServers).toEqual([iceServers])
+  })
+
+  it('reuses the same in-memory ICE configuration for a fresh peer during automatic recovery', async () => {
+    vi.useFakeTimers()
+    const fixture = createFixture(
+      hostSession,
+      [hostPresence, guestPresence],
+      0,
+      iceServers,
+    )
+    await fixture.runtime.start()
+
+    fixture.peers[0].emitRecoveryNeeded()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(fixture.iceServersRequestCount).toBe(1)
+    expect(fixture.peers).toHaveLength(2)
+    expect(fixture.peerIceServers).toEqual([iceServers, iceServers])
+  })
+
+  it('falls back to an empty ICE configuration and surfaces a notice when the fetch fails', async () => {
+    const fixture = createFixture(
+      hostSession,
+      [hostPresence, guestPresence],
+      0,
+      new Error('simulated ICE configuration failure'),
+    )
+
+    await fixture.runtime.start()
+
+    expect(fixture.peerIceServers).toEqual([[]])
+    expect(
+      fixture.notices.some((notice) => notice.includes('baseline connection setup')),
+    ).toBe(true)
+    expect(fixture.notices.join(' ')).not.toContain('simulated ICE configuration failure')
+  })
+
+  it('a new RoomRuntime instance fetches its own fresh ICE configuration', async () => {
+    const firstFixture = createFixture(
+      hostSession,
+      [hostPresence, guestPresence],
+      0,
+      [{ urls: ['stun:first.example.com:3478'] }],
+    )
+    await firstFixture.runtime.start()
+    await firstFixture.runtime.stop()
+
+    const secondFixture = createFixture(
+      hostSession,
+      [hostPresence, guestPresence],
+      0,
+      [{ urls: ['stun:second.example.com:3478'] }],
+    )
+    await secondFixture.runtime.start()
+
+    expect(firstFixture.peerIceServers).toEqual([
+      [{ urls: ['stun:first.example.com:3478'] }],
+    ])
+    expect(secondFixture.peerIceServers).toEqual([
+      [{ urls: ['stun:second.example.com:3478'] }],
+    ])
+  })
+})
+
 function createFixture(
   session: RoomSession,
   initialPresence: RoomPresenceParticipant[],
   peerStartFailures = 0,
+  initialIceServersResult: RTCIceServer[] | Error = [],
 ) {
   const snapshots: RoomRuntimeSnapshot[] = []
+  const notices: string[] = []
   const hub = new FakeHub(initialPresence)
   const peers: FakePeer[] = []
+  const peerIceServers: (readonly RTCIceServer[])[] = []
   let remainingStartFailures = peerStartFailures
+  let iceServersRequestCount = 0
+  let currentIceServersResult = initialIceServersResult
   const dependencies: RoomRuntimeDependencies = {
     createHubClient: (_session, handlers) => {
       hub.handlers = handlers
       return hub
     },
-    createPeerController: (role, signaling, callbacks) => {
+    createPeerController: (role, signaling, callbacks, iceServers) => {
       const peer = new FakePeer(role, signaling, callbacks)
+      peerIceServers.push(iceServers)
       if (remainingStartFailures > 0) {
         peer.startError = new Error('simulated negotiation failure')
         remainingStartFailures -= 1
       }
       peers.push(peer)
       return peer
+    },
+    fetchIceServers: () => {
+      iceServersRequestCount += 1
+      return currentIceServersResult instanceof Error
+        ? Promise.reject(currentIceServersResult)
+        : Promise.resolve(currentIceServersResult)
     },
     schedule: (callback, delay) => {
       const timer = window.setTimeout(callback, delay)
@@ -420,7 +529,7 @@ function createFixture(
     {
       onStateChanged: (snapshot) => snapshots.push(snapshot),
       onRemoteVideoChanged: () => undefined,
-      onNotice: () => undefined,
+      onNotice: (message) => notices.push(message),
     },
     dependencies,
   )
@@ -429,7 +538,15 @@ function createFixture(
     runtime,
     hub,
     peers,
+    peerIceServers,
+    notices,
     snapshots,
+    setIceServersResult(result: RTCIceServer[] | Error) {
+      currentIceServersResult = result
+    },
+    get iceServersRequestCount() {
+      return iceServersRequestCount
+    },
     get latest() {
       return snapshots.at(-1) ?? runtime.state
     },

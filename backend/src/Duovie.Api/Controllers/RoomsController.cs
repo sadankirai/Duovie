@@ -1,5 +1,7 @@
 using Duovie.Api.Configuration;
+using Duovie.Api.Contracts.IceServers;
 using Duovie.Api.Contracts.Rooms;
+using Duovie.Application.IceServers;
 using Duovie.Application.ParticipantSessions;
 using Duovie.Application.Rooms;
 using Duovie.Domain.Rooms;
@@ -16,6 +18,7 @@ public sealed class RoomsController(
     JoinRoomSession joinRoomSession,
     ParticipantSessionService participantSessionService,
     IRoomRepository roomRepository,
+    IIceServerProvisioningService iceServerProvisioningService,
     IOptions<RoomOptions> roomOptions,
     TimeProvider timeProvider) : ControllerBase
 {
@@ -30,6 +33,9 @@ public sealed class RoomsController(
 
     private readonly IRoomRepository _roomRepository = roomRepository
         ?? throw new ArgumentNullException(nameof(roomRepository));
+
+    private readonly IIceServerProvisioningService _iceServerProvisioningService = iceServerProvisioningService
+        ?? throw new ArgumentNullException(nameof(iceServerProvisioningService));
 
     private readonly RoomOptions _roomOptions = roomOptions?.Value
         ?? throw new ArgumentNullException(nameof(roomOptions));
@@ -107,6 +113,46 @@ public sealed class RoomsController(
             new ResumedParticipantResponse(
                 session.ParticipantId,
                 session.Role.ToString())));
+    }
+
+    [HttpGet("{roomId:guid}/ice-servers")]
+    [ProducesResponseType<IceServersResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<IceServersResponse>> GetIceServersAsync(
+        Guid roomId,
+        CancellationToken cancellationToken)
+    {
+        SetCredentialResponseCachePolicy();
+
+        ValidatedParticipantSession session;
+
+        try
+        {
+            session = await _participantSessionService.ValidateAsync(
+                GetBearerCredential(),
+                roomId,
+                cancellationToken);
+        }
+        catch (ParticipantSessionInvalidException)
+        {
+            return InvalidParticipantSession();
+        }
+
+        var room = await _roomRepository.GetByIdAsync(roomId, cancellationToken);
+        if (room is null
+            || room.Status == RoomStatus.Closed
+            || room.IsExpired(_timeProvider.GetUtcNow())
+            || !SessionMatchesRoom(session, room))
+        {
+            return InvalidParticipantSession();
+        }
+
+        var iceServers = await _iceServerProvisioningService.GetIceServersAsync(cancellationToken);
+
+        return Ok(new IceServersResponse(
+            iceServers
+                .Select(server => new IceServerResponse(server.Urls, server.Username, server.Credential))
+                .ToList()));
     }
 
     private static RoomSessionResponse ToResponse(

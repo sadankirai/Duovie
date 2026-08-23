@@ -51,6 +51,24 @@ describe('WebRtcPeerController', () => {
     expect(fixture.peer.transceivers).toHaveLength(1)
   })
 
+  it('passes the configured iceServers to a new RTCPeerConnection for both roles', async () => {
+    const iceServers: RTCIceServer[] = [
+      { urls: ['stun:stun.example.com:3478'] },
+      { urls: ['turn:turn.example.com:3478'], username: 'u', credential: 'c' },
+    ]
+    const host = createFixture('Host', iceServers)
+
+    await host.controller.startHostNegotiation(true)
+
+    expect(host.configurations).toEqual([{ iceServers }])
+
+    const guest = createFixture('Guest', iceServers)
+
+    await guest.controller.handleOffer(offer(browserOfferSdp))
+
+    expect(guest.configurations).toEqual([{ iceServers }])
+  })
+
   it('checks role, Hub connectivity, and Guest presence before creating a peer', async () => {
     const guest = createFixture('Guest')
     const disconnectedHost = createFixture('Host')
@@ -807,7 +825,7 @@ describe('WebRtcPeerController', () => {
   })
 })
 
-function createFixture(role: ParticipantRole) {
+function createFixture(role: ParticipantRole, iceServers: RTCIceServer[] = []) {
   const signaling = new FakePeerSignaling()
   const configurations: RTCConfiguration[] = []
   const statuses: PeerConnectionStatus[] = []
@@ -852,6 +870,7 @@ function createFixture(role: ParticipantRole) {
         mediaOperationFailures += 1
       },
     },
+    iceServers,
     factory,
     displayMediaProvider,
     remoteMediaStreamFactory,

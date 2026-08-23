@@ -68,6 +68,16 @@ Captured display/tab/system audio is intentionally deferred until later browser-
 
 ## Stage 6 — STUN / TURN Reliability
 
+**Status:** Task 6.1 ICE/STUN/TURN reliability foundation is complete: a provider-neutral
+backend abstraction, a Cloudflare Realtime TURN implementation that issues short-lived
+credentials from a server-only long-lived secret, the participant-authenticated
+`GET /api/rooms/{roomId}/ice-servers` endpoint, and RoomRuntime/WebRtcPeerController
+in-memory ICE integration on the frontend. Configured STUN and Cloudflare TURN both stay
+off by default so local development and the Playwright E2E suite never depend on external
+network access. Real cross-network/different-device TURN acceptance (selected candidate
+type, forced-relay validation) has not been performed and is deferred to a separate manual
+milestone; Stage 6 is not complete until that acceptance happens.
+
 **Objective:** make connectivity resilient across networks.  
 **Scope:** STUN, TURN fallback, short-lived server-issued credentials, ICE restart/failure handling, different-network tests.  
 **Non-goal:** exposing permanent TURN credentials.  

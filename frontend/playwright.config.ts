@@ -36,6 +36,10 @@ export default defineConfig({
         ConnectionStrings__DefaultConnection: databaseConnection,
         ParticipantSessions__Lifetime: '00:30:00',
         Rooms__Lifetime: '02:00:00',
+        // E2E proves real same-machine host-candidate P2P only; it must never depend on
+        // external STUN/TURN network access. Cloudflare TURN stays off and no public STUN
+        // is configured, so the ICE endpoint returns an empty iceServers list here.
+        CloudflareTurn__Enabled: 'false',
       },
     },
     {

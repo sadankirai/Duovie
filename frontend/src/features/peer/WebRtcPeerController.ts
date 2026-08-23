@@ -83,6 +83,7 @@ export class WebRtcPeerController {
   private readonly role: ParticipantRole
   private readonly signaling: PeerSignaling
   private readonly callbacks: WebRtcPeerCallbacks
+  private readonly iceServers: readonly RTCIceServer[]
   private readonly peerConnectionFactory: PeerConnectionFactory
   private readonly displayMediaProvider: DisplayMediaProvider
   private readonly remoteMediaStreamFactory: RemoteMediaStreamFactory
@@ -105,6 +106,7 @@ export class WebRtcPeerController {
     role: ParticipantRole,
     signaling: PeerSignaling,
     callbacks: WebRtcPeerCallbacks,
+    iceServers: readonly RTCIceServer[] = [],
     peerConnectionFactory: PeerConnectionFactory = (configuration) =>
       new RTCPeerConnection(configuration),
     displayMediaProvider: DisplayMediaProvider = requestDisplayMedia,
@@ -114,6 +116,7 @@ export class WebRtcPeerController {
     this.role = role
     this.signaling = signaling
     this.callbacks = callbacks
+    this.iceServers = iceServers
     this.peerConnectionFactory = peerConnectionFactory
     this.displayMediaProvider = displayMediaProvider
     this.remoteMediaStreamFactory = remoteMediaStreamFactory
@@ -515,7 +518,9 @@ export class WebRtcPeerController {
   }
 
   private createPeerConnection(): ActivePeer {
-    const peerConnection = this.peerConnectionFactory({ iceServers: [] })
+    const peerConnection = this.peerConnectionFactory({
+      iceServers: [...this.iceServers],
+    })
     const activePeer = { peerConnection, generation: ++this.nextGeneration }
     const emitStatus = () => {
       if (this.isCurrent(activePeer)) {

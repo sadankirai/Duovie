@@ -1,5 +1,6 @@
 using Duovie.Application.Rooms;
 using Duovie.Domain.Rooms;
+using Duovie.Infrastructure.IceServers;
 using Duovie.Infrastructure.Persistence;
 using Duovie.Infrastructure.Persistence.Repositories;
 using Microsoft.AspNetCore.Hosting;
@@ -8,6 +9,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Http;
 using Microsoft.Extensions.Logging;
 
 namespace Duovie.IntegrationTests;
@@ -21,13 +23,17 @@ public sealed class PostgreSqlDuovieApiFactory : WebApplicationFactory<Program>
     private readonly bool _failRoomSave;
     private readonly ILoggerProvider? _loggerProvider;
     private readonly TimeProvider _timeProvider;
+    private readonly IReadOnlyDictionary<string, string?>? _additionalConfiguration;
+    private readonly HttpMessageHandler? _cloudflareTurnHttpMessageHandler;
 
     public PostgreSqlDuovieApiFactory(
         string connectionString,
         bool coordinateTwoRoomLoads = false,
         bool failRoomSave = false,
         ILoggerProvider? loggerProvider = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IReadOnlyDictionary<string, string?>? additionalConfiguration = null,
+        HttpMessageHandler? cloudflareTurnHttpMessageHandler = null)
     {
         _connectionString = connectionString;
         _roomLoadCoordinator = coordinateTwoRoomLoads
@@ -36,6 +42,8 @@ public sealed class PostgreSqlDuovieApiFactory : WebApplicationFactory<Program>
         _failRoomSave = failRoomSave;
         _loggerProvider = loggerProvider;
         _timeProvider = timeProvider ?? new FixedTimeProvider(UtcNow);
+        _additionalConfiguration = additionalConfiguration;
+        _cloudflareTurnHttpMessageHandler = cloudflareTurnHttpMessageHandler;
     }
 
     public static DateTimeOffset UtcNow { get; } =
@@ -56,13 +64,22 @@ public sealed class PostgreSqlDuovieApiFactory : WebApplicationFactory<Program>
         builder.ConfigureAppConfiguration((_, configuration) =>
         {
             configuration.Sources.Clear();
-            configuration.AddInMemoryCollection(
-                new Dictionary<string, string?>
+            var settings = new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:DefaultConnection"] = _connectionString,
+                ["ParticipantSessions:Lifetime"] = SessionLifetime,
+                ["Rooms:Lifetime"] = RoomLifetime,
+            };
+
+            if (_additionalConfiguration is not null)
+            {
+                foreach (var (key, value) in _additionalConfiguration)
                 {
-                    ["ConnectionStrings:DefaultConnection"] = _connectionString,
-                    ["ParticipantSessions:Lifetime"] = SessionLifetime,
-                    ["Rooms:Lifetime"] = RoomLifetime,
-                });
+                    settings[key] = value;
+                }
+            }
+
+            configuration.AddInMemoryCollection(settings);
         });
         builder.ConfigureServices(services =>
         {
@@ -91,6 +108,14 @@ public sealed class PostgreSqlDuovieApiFactory : WebApplicationFactory<Program>
                         ? new SaveFailingRoomRepository(repository)
                         : repository;
                 });
+            }
+
+            if (_cloudflareTurnHttpMessageHandler is not null)
+            {
+                services.PostConfigure<HttpClientFactoryOptions>(
+                    nameof(CloudflareTurnCredentialProvider),
+                    options => options.HttpMessageHandlerBuilderActions.Add(
+                        handlerBuilder => handlerBuilder.PrimaryHandler = _cloudflareTurnHttpMessageHandler));
             }
         });
     }

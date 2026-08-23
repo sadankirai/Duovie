@@ -11,6 +11,7 @@ import {
   type RoomWebRtcOffer,
   type RoomWebRtcRecoveryRequested,
 } from './contracts'
+import { fetchRoomIceServers } from './iceServersApi'
 import { RoomHubClient, type RoomHubHandlers } from './RoomHubClient'
 import {
   WebRtcPeerController,
@@ -82,7 +83,9 @@ export interface RoomRuntimeDependencies {
     role: ParticipantRole,
     signaling: PeerSignaling,
     callbacks: WebRtcPeerCallbacks,
+    iceServers: readonly RTCIceServer[],
   ) => RoomPeerRuntime
+  fetchIceServers: (session: RoomSession) => Promise<RTCIceServer[]>
   schedule: (callback: () => void, delayMilliseconds: number) => CancelScheduledWork
   retryDelaysMilliseconds: readonly number[]
   hubReconnectDelaysMilliseconds: readonly number[]
@@ -110,8 +113,10 @@ export const initialRoomRuntimeSnapshot: RoomRuntimeSnapshot = {
 
 export const defaultRoomRuntimeDependencies: RoomRuntimeDependencies = {
   createHubClient: (session, handlers) => new RoomHubClient(session, handlers),
-  createPeerController: (role, signaling, callbacks) =>
-    new WebRtcPeerController(role, signaling, callbacks),
+  createPeerController: (role, signaling, callbacks, iceServers) =>
+    new WebRtcPeerController(role, signaling, callbacks, iceServers),
+  fetchIceServers: (session) =>
+    fetchRoomIceServers(session.roomId, session.credential),
   schedule: (callback, delayMilliseconds) => {
     const timer = window.setTimeout(callback, delayMilliseconds)
     return () => window.clearTimeout(timer)
@@ -135,6 +140,7 @@ export class RoomRuntime {
   private recoveryEpisode = false
   private cancelScheduledHubReconnect: CancelScheduledWork | null = null
   private hubRetryIndex = 0
+  private iceServers: RTCIceServer[] = []
   private snapshot: RoomRuntimeSnapshot = {
     ...initialRoomRuntimeSnapshot,
     presence: [],
@@ -217,6 +223,27 @@ export class RoomRuntime {
     hub = this.dependencies.createHubClient(this.session, handlers)
     this.hub = hub
     this.update({ hubStatus: 'connecting' })
+
+    // Resolved before hub.start() so a presence event delivered as part of connecting
+    // (synchronously in tests, or a fast round trip in production) can never create a
+    // peer with a stale, still-empty iceServers list.
+    const iceResult = await this.dependencies.fetchIceServers(this.session).then(
+      (servers) => ({ ok: true as const, servers }),
+      (error: unknown) => ({ ok: false as const, error }),
+    )
+
+    if (!isCurrentHub()) {
+      return
+    }
+
+    if (iceResult.ok) {
+      this.iceServers = iceResult.servers
+    } else {
+      this.iceServers = []
+      this.callbacks.onNotice(
+        'A connection configuration step failed; using a baseline connection setup.',
+      )
+    }
 
     try {
       await hub.start()
@@ -637,7 +664,12 @@ export class RoomRuntime {
       },
     }
 
-    peer = this.dependencies.createPeerController(this.session.role, hub, callbacks)
+    peer = this.dependencies.createPeerController(
+      this.session.role,
+      hub,
+      callbacks,
+      this.iceServers,
+    )
     this.peer = peer
     this.snapshot.peerStatus = initialPeerConnectionStatus
     this.snapshot.peerActive = false

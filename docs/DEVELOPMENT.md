@@ -38,8 +38,33 @@ The API exposes `GET /health/live` for process liveness and `GET /health/ready` 
 - `POST /api/rooms` creates a Room using the server-configured `Rooms:Lifetime` and returns the server-generated Host participant session.
 - `POST /api/rooms/{roomId}/join` joins an available Room and returns the server-generated Guest participant session.
 - `GET /api/rooms/{roomId}/session` validates an existing opaque participant credential from `Authorization: Bearer <credential>` and returns the canonical server-derived Room and participant identity without echoing the credential.
+- `GET /api/rooms/{roomId}/ice-servers` validates the same opaque participant credential the same way and returns provider-neutral WebRTC `iceServers` configuration for `RTCPeerConnection`: baseline STUN when configured, plus a Cloudflare Realtime TURN short-lived credential when TURN is enabled and the provider call succeeds. See "ICE/STUN/TURN configuration" below.
 
-Create and Join accept no participant identity, role, or credential input. Their successful responses include a bearer-style participant credential in the response body. Resume accepts no client role or participant identity and revalidates credential expiry, Room binding, current Room availability, and the participant's canonical role/identity before restoring a session. Missing, malformed, unknown, expired, wrong-Room, and unavailable-Room credentials receive the same non-leaking authentication failure. All three responses use `Cache-Control: no-store`. A Room Id identifies the Room but grants no participant or Host authority. Room closure is not exposed because the canonical product rules do not yet define who may close a Room.
+Create and Join accept no participant identity, role, or credential input. Their successful responses include a bearer-style participant credential in the response body. Resume and the ICE-servers endpoint accept no client role or participant identity and revalidate credential expiry, Room binding, current Room availability, and the participant's canonical role/identity before responding. Missing, malformed, unknown, expired, wrong-Room, and unavailable-Room credentials receive the same non-leaking authentication failure. All four responses use `Cache-Control: no-store`. A Room Id identifies the Room but grants no participant or Host authority. Room closure is not exposed because the canonical product rules do not yet define who may close a Room.
+
+## ICE/STUN/TURN configuration (Stage 6.1)
+
+`GET /api/rooms/{roomId}/ice-servers` composes two independent, both-optional sources:
+
+- **Baseline STUN** — `IceServers:StunUrls` (e.g. `IceServers__StunUrls__0=stun:stun.cloudflare.com:3478` for real-network use; Cloudflare also documents an alternate `:53` STUN port, but some browsers/networks block outbound port 53, so it is not a universally reliable fallback and is not assumed here). Empty by default.
+- **Cloudflare Realtime TURN** — server-only configuration:
+
+  ```sh
+  export CloudflareTurn__Enabled=true
+  export CloudflareTurn__KeyId='<cloudflare-turn-key-id>'
+  export CloudflareTurn__ApiToken='<cloudflare-turn-key-api-token>'
+  export CloudflareTurn__CredentialTtlSeconds=14400   # optional, defaults to 14400 (4h)
+  ```
+
+  `KeyId` and `ApiToken` are the long-lived Cloudflare secret; they never reach the browser, are never logged, and must never be committed. If `CloudflareTurn:Enabled` is `true` without both, the API fails fast at startup with the same `OptionsValidationException` pattern as `Rooms:Lifetime`. Leaving `CloudflareTurn:Enabled` unset (or `false`) is the safe default: no Cloudflare secret is required, and the endpoint returns whatever baseline STUN is configured (empty in local development and E2E).
+
+  The default 14,400-second (4-hour) TTL is chosen to comfortably exceed the ~2-hour development `Rooms:Lifetime` with margin, since a Room fetches its ICE configuration once per participant session and keeps it only in memory for that Room's lifetime; mid-call refresh is intentionally out of scope while the TTL safely covers the Room lifetime. Operators who configure a longer Room lifetime should raise the TTL accordingly. A future long-lived Room could refresh credentials with `RTCPeerConnection.setConfiguration` if that ever becomes necessary.
+
+  A TURN provider failure (network error, non-2xx, or a malformed response) degrades to baseline-only rather than failing the endpoint or the Room Hub/session; it is logged as a warning without the token, TURN username/credential, or raw response body.
+
+On the frontend, `RoomRuntime` fetches this configuration once per participant session (before the Hub connects, so no race with early presence events) and keeps it only in memory; it is never written to `sessionStorage`/`localStorage`, matching the participant-credential-only storage policy below. A fetch failure falls back to an empty/baseline `iceServers` list rather than blocking the Room session, and shows a generic diagnostic notice with no provider detail. Every fresh peer—initial negotiation, offer handling, and bounded automatic recovery—reuses that same in-memory list; a page refresh or full `RoomRuntime` replacement fetches fresh configuration the same way it re-validates the participant session.
+
+Real different-network/different-device TURN acceptance (confirming a relay candidate is actually selected under forced or restrictive conditions) is a separate, later manual milestone and has not been performed as part of this foundation task.
 
 ## Room realtime presence
 
@@ -84,7 +109,7 @@ Stage 4 established the trackless peer transport foundation. Stage 5.1 adds Host
 
 **Stop Sharing** and the browser-native sharing indicator both detach the track with `replaceTrack(null)` while keeping the peer available for another share. Chrome may keep the Guest receiver track live and retain its final frame after the Host detaches, without firing a corresponding remote `mute` or `ended` event. Duovie therefore sends a minimal, ephemeral `RoomScreenShareStateChanged` control-plane event from the authenticated Host to the trusted Guest role group. That event controls whether the development harness presents the retained stream as live; the underlying receiver remains reusable for a later `replaceTrack`, and media itself remains P2P. The state is not persisted or replayed and contains no media.
 
-Peer failure/recovery, diagnostic restart, Hub/session teardown, opposite-participant offline cleanup, and page teardown stop any owned capture track. Automatic peer recovery never restarts capture; the Host must explicitly choose Share Screen again. When the Hub is still usable, active Host cleanup also sends the Guest an inactive state; a disconnected Hub instead relies on the existing trusted offline/reset lifecycle. Permission cancellation and attachment failure leave a healthy peer retryable and expose no browser-sensitive error detail. Display/system/tab audio is intentionally deferred; camera, microphone, data channels, and STUN/TURN are not included. Some DRM/HDCP-protected services or browser surfaces may block capture or produce a black frame; Duovie does not attempt to bypass browser, OS, or content-protection policy. `iceServers` remains empty until Stage 6.
+Peer failure/recovery, diagnostic restart, Hub/session teardown, opposite-participant offline cleanup, and page teardown stop any owned capture track. Automatic peer recovery never restarts capture; the Host must explicitly choose Share Screen again. When the Hub is still usable, active Host cleanup also sends the Guest an inactive state; a disconnected Hub instead relies on the existing trusted offline/reset lifecycle. Permission cancellation and attachment failure leave a healthy peer retryable and expose no browser-sensitive error detail. Display/system/tab audio is intentionally deferred; camera, microphone, and data channels are not included. Some DRM/HDCP-protected services or browser surfaces may block capture or produce a black frame; Duovie does not attempt to bypass browser, OS, or content-protection policy. `iceServers` now comes from the Stage 6.1 `GET /api/rooms/{roomId}/ice-servers` endpoint described below; it is an empty list unless baseline STUN or Cloudflare TURN is explicitly configured, which local development and E2E do not do.
 
 ### Stage 4 browser verification
 

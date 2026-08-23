@@ -1,6 +1,8 @@
 using System.Globalization;
+using Duovie.Application.IceServers;
 using Duovie.Application.ParticipantSessions;
 using Duovie.Application.Rooms;
+using Duovie.Infrastructure.IceServers;
 using Duovie.Infrastructure.Persistence;
 using Duovie.Infrastructure.Persistence.Repositories;
 using Microsoft.EntityFrameworkCore;
@@ -41,6 +43,31 @@ public static class DependencyInjection
         services.AddScoped<ParticipantSessionAuthorizer>();
         services.AddScoped<CreateRoomSession>();
         services.AddScoped<JoinRoomSession>();
+
+        services.AddOptions<IceServerOptions>()
+            .Bind(configuration.GetSection(IceServerOptions.ConfigurationSectionName));
+
+        services.AddOptions<CloudflareTurnOptions>()
+            .Bind(configuration.GetSection(CloudflareTurnOptions.ConfigurationSectionName))
+            .Validate(
+                cloudflareOptions => !cloudflareOptions.Enabled
+                    || (!string.IsNullOrWhiteSpace(cloudflareOptions.KeyId)
+                        && !string.IsNullOrWhiteSpace(cloudflareOptions.ApiToken)),
+                $"Configuration values '{CloudflareTurnOptions.ConfigurationSectionName}:KeyId' and " +
+                $"'{CloudflareTurnOptions.ConfigurationSectionName}:ApiToken' are required when " +
+                $"'{CloudflareTurnOptions.ConfigurationSectionName}:Enabled' is true.")
+            .Validate(
+                cloudflareOptions => cloudflareOptions.CredentialTtlSeconds > 0,
+                $"Configuration value '{CloudflareTurnOptions.ConfigurationSectionName}:CredentialTtlSeconds' " +
+                "must be positive.")
+            .ValidateOnStart();
+
+        services.AddHttpClient<CloudflareTurnCredentialProvider>(client =>
+        {
+            client.BaseAddress = new Uri("https://rtc.live.cloudflare.com/");
+            client.Timeout = TimeSpan.FromSeconds(5);
+        });
+        services.AddScoped<IIceServerProvisioningService, IceServerProvisioningService>();
 
         return services;
     }
