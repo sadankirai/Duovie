@@ -90,13 +90,24 @@ direct host-to-host P2P. Together these show both the direct-P2P path and the re
 Cloudflare TURN relay path work; production remains `iceTransportPolicy: "all"` with direct
 P2P preferred and TURN as fallback only.
 
-Real cross-network/different-device acceptance — one participant on ordinary Wi-Fi and the
-other on a separately networked connection (e.g. cellular/mobile hotspot), using normal
-production-style `iceTransportPolicy: "all"` with automatic direct-or-TURN selection and
-confirming Host screen video actually reaches the Guest — has not yet been performed and
-remains the final Stage 6 acceptance milestone; Stage 6 is not complete until that
-different-device/different-network acceptance happens. The same-machine forced-relay test
-proves the TURN service and relay path work but is not a substitute for it.
+Real cross-network/different-device acceptance has since passed and closes Stage 6. Two
+independent real-world checks were performed:
+
+- **Normal mode, different device + different network:** Host on a Mac on ordinary Wi-Fi,
+  Guest on a phone on a mobile/cellular network, `iceTransportPolicy: "all"`. ICE reached
+  `connected`/`completed`, the WebRTC peer connection reached `connected`, the selected
+  successful candidate pair was `srflx ↔ srflx` (automatic direct P2P — no relay needed),
+  and Host screen video reached the phone. Cloudflare relay candidates were also gathered
+  during this session (available as fallback) but were not the path selected.
+- **Separate forced-relay acceptance (development-only seam, same machine):** Cloudflare
+  TURN/UDP 3478 was exercised with the selected pair `relay ↔ relay` in state `succeeded`
+  and real traffic flowing through that candidate pair; TURN/TCP and TURNS/TLS candidates
+  were also gathered as fallback transports.
+
+Together these prove both the direct cross-network P2P path and the Cloudflare TURN
+fallback path work. Production remains `iceTransportPolicy: "all"` with direct P2P
+preferred and TURN as fallback only; the forced-relay switch remains a development/test-only
+seam that production builds cannot enable. **Stage 6 is complete.**
 
 **Objective:** make connectivity resilient across networks.  
 **Scope:** STUN, TURN fallback, short-lived server-issued credentials, ICE restart/failure handling, different-network tests.  
@@ -105,6 +116,16 @@ proves the TURN service and relay path work but is not a substitute for it.
 **Exit criteria:** TURN-forced and cross-network scenarios have been tested.
 
 ## Stage 7 — Stability & Stream Quality
+
+**Status:** In progress. Task 7.1 WebRTC quality telemetry & diagnostics is complete: a
+feature-local, memory-only quality-telemetry pipeline (`RTCPeerConnection.getStats()` →
+normalized snapshot → `RoomRuntime` → development diagnostics UI) observes the current
+connection without changing it. This is observability only — no automatic bitrate,
+resolution, or FPS adaptation has been implemented yet. The real phone/cellular Guest test
+during Stage 6 acceptance showed the video reaching the Guest but appearing somewhat
+dropped/choppy; Task 7.1 exists to make that connection measurable so a follow-up real
+phone/cellular re-test with the new sender/receiver metrics visible can inform whether and
+how Stage 7.2 adaptive-quality work is justified, rather than guessing at the cause.
 
 **Objective:** prioritize reliable sessions.  
 **Scope:** WebRTC statistics, health model, quality monitoring, recovery, long-session testing, and adaptive-quality research/implementation when justified.  

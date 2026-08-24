@@ -19,6 +19,7 @@ import type {
   ScreenShareState,
   WebRtcPeerCallbacks,
 } from './WebRtcPeerController'
+import type { QualitySnapshot } from './qualitySnapshot'
 
 const roomId = 'a3f45d1e-6c6e-4cab-9dc8-246a2bc74995'
 const hostSession: RoomSession = {
@@ -185,7 +186,7 @@ describe('RoomRuntime automatic orchestration', () => {
     replacement.emitConnected()
 
     stalePeer.emitRecoveryNeeded()
-    await vi.runAllTimersAsync()
+    await vi.advanceTimersByTimeAsync(0)
 
     expect(fixture.peers).toHaveLength(2)
     expect(fixture.latest.runtimeStatus).toBe('connected')
@@ -542,6 +543,182 @@ describe('RoomRuntime development-only forced-relay seam', () => {
   })
 })
 
+describe('RoomRuntime WebRTC quality telemetry', () => {
+  it('starts stats polling once a peer reaches a connected state', async () => {
+    vi.useFakeTimers()
+    const fixture = createFixture(hostSession, [hostPresence, guestPresence])
+    await fixture.runtime.start()
+    const peer = fixture.peers[0]
+
+    expect(peer.getQualitySnapshotCallCount).toBe(0)
+    peer.emitConnected()
+    expect(fixture.latest.qualitySnapshot).toBeNull()
+
+    await vi.advanceTimersByTimeAsync(2_000)
+
+    expect(peer.getQualitySnapshotCallCount).toBe(1)
+    expect(fixture.latest.qualitySnapshot).not.toBeNull()
+
+    await fixture.runtime.stop()
+  })
+
+  it('does not poll while the Host has no Guest', async () => {
+    vi.useFakeTimers()
+    const fixture = createFixture(hostSession, [hostPresence])
+    await fixture.runtime.start()
+
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    expect(fixture.peers).toHaveLength(0)
+    expect(fixture.latest.qualitySnapshot).toBeNull()
+  })
+
+  it('stops polling the old peer once it is disposed', async () => {
+    vi.useFakeTimers()
+    const fixture = createFixture(hostSession, [hostPresence, guestPresence])
+    await fixture.runtime.start()
+    const peer = fixture.peers[0]
+    peer.emitConnected()
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(peer.getQualitySnapshotCallCount).toBe(1)
+
+    fixture.hub.emitPresence({ ...guestPresence, connected: false })
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    expect(peer.getQualitySnapshotCallCount).toBe(1)
+    expect(fixture.latest.qualitySnapshot).toBeNull()
+  })
+
+  it('starts a fresh stats lifecycle for the replacement peer after automatic recovery', async () => {
+    vi.useFakeTimers()
+    const fixture = createFixture(hostSession, [hostPresence, guestPresence])
+    await fixture.runtime.start()
+    const firstPeer = fixture.peers[0]
+    firstPeer.emitConnected()
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(firstPeer.getQualitySnapshotCallCount).toBe(1)
+
+    firstPeer.emitRecoveryNeeded()
+    await vi.advanceTimersByTimeAsync(0)
+    const secondPeer = fixture.peers[1]
+    secondPeer.emitConnected()
+
+    await vi.advanceTimersByTimeAsync(2_000)
+
+    expect(secondPeer.getQualitySnapshotCallCount).toBe(1)
+    // The old peer's own poll loop was cancelled; it never gets another tick.
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(firstPeer.getQualitySnapshotCallCount).toBe(1)
+  })
+
+  it('cleans stale quality stats on Hub disconnect', async () => {
+    vi.useFakeTimers()
+    const fixture = createFixture(hostSession, [hostPresence, guestPresence])
+    await fixture.runtime.start()
+    const peer = fixture.peers[0]
+    peer.emitConnected()
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(fixture.latest.qualitySnapshot).not.toBeNull()
+
+    fixture.hub.emitDisconnect()
+
+    expect(fixture.latest.qualitySnapshot).toBeNull()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(peer.getQualitySnapshotCallCount).toBe(1)
+  })
+
+  it('does not create duplicate polling loops across automatic Hub reconnect', async () => {
+    vi.useFakeTimers()
+    const fixture = createFixture(hostSession, [hostPresence, guestPresence])
+    await fixture.runtime.start()
+    fixture.peers[0].emitConnected()
+    await vi.advanceTimersByTimeAsync(2_000)
+
+    fixture.hub.emitDisconnect()
+    await vi.advanceTimersByTimeAsync(0)
+    const reconnectedPeer = fixture.peers[1]
+    reconnectedPeer.emitConnected()
+
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(reconnectedPeer.getQualitySnapshotCallCount).toBe(1)
+
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(reconnectedPeer.getQualitySnapshotCallCount).toBe(2)
+  })
+
+  it('cancels polling when the Room runtime is stopped', async () => {
+    vi.useFakeTimers()
+    const fixture = createFixture(hostSession, [hostPresence, guestPresence])
+    await fixture.runtime.start()
+    const peer = fixture.peers[0]
+    peer.emitConnected()
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(peer.getQualitySnapshotCallCount).toBe(1)
+
+    await fixture.runtime.stop()
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    expect(peer.getQualitySnapshotCallCount).toBe(1)
+    expect(fixture.latest.qualitySnapshot).toBeNull()
+  })
+
+  it('a stale in-flight poll cannot update a stopped/replaced runtime', async () => {
+    vi.useFakeTimers()
+    const fixture = createFixture(hostSession, [hostPresence, guestPresence])
+    await fixture.runtime.start()
+    const peer = fixture.peers[0]
+    peer.emitConnected()
+
+    let resolveSnapshot: (value: QualitySnapshot | null) => void = () => undefined
+    peer.getQualitySnapshot = () =>
+      new Promise((resolve) => {
+        resolveSnapshot = resolve
+      })
+
+    await vi.advanceTimersByTimeAsync(2_000)
+    await fixture.runtime.stop()
+    resolveSnapshot(fakeQualitySnapshot())
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(fixture.latest.qualitySnapshot).toBeNull()
+  })
+
+  it('a getStats rejection is non-fatal and does not stop subsequent polling', async () => {
+    vi.useFakeTimers()
+    const fixture = createFixture(hostSession, [hostPresence, guestPresence])
+    await fixture.runtime.start()
+    const peer = fixture.peers[0]
+    peer.emitConnected()
+    peer.qualitySnapshotShouldReject = true
+
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(fixture.latest.qualitySnapshot).toBeNull()
+    expect(fixture.latest.runtimeStatus).toBe('connected')
+
+    peer.qualitySnapshotShouldReject = false
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(fixture.latest.qualitySnapshot).not.toBeNull()
+  })
+
+  it('leaves the connected peer and its capture untouched when telemetry alone fails', async () => {
+    vi.useFakeTimers()
+    const fixture = createFixture(hostSession, [hostPresence, guestPresence])
+    await fixture.runtime.start()
+    const peer = fixture.peers[0]
+    peer.emitConnected()
+    peer.screenShareStateValue = 'active'
+    peer.qualitySnapshotShouldReject = true
+
+    await vi.advanceTimersByTimeAsync(2_000)
+
+    expect(fixture.latest.runtimeStatus).toBe('connected')
+    expect(fixture.peers).toHaveLength(1)
+    expect(peer.closeCount).toBe(0)
+    expect(peer.resetNotifyValues).toEqual([])
+    expect(peer.screenShareStateValue).toBe('active')
+  })
+})
+
 function createFixture(
   session: RoomSession,
   initialPresence: RoomPresenceParticipant[],
@@ -587,6 +764,7 @@ function createFixture(
     },
     retryDelaysMilliseconds: [0, 300, 1_000],
     hubReconnectDelaysMilliseconds: [0, 300, 1_000],
+    qualityPollIntervalMilliseconds: 2_000,
   }
   const runtime = new RoomRuntime(
     session,
@@ -793,6 +971,33 @@ class FakePeer implements RoomPeerRuntime {
 
   public emitRecoveryNeeded(): void {
     this.callbacks.onRecoveryNeeded('connection-failed')
+  }
+
+  public getQualitySnapshotCallCount = 0
+  public qualitySnapshotResult: QualitySnapshot | null = fakeQualitySnapshot()
+  public qualitySnapshotShouldReject = false
+
+  public async getQualitySnapshot(): Promise<QualitySnapshot | null> {
+    this.getQualitySnapshotCallCount += 1
+    if (this.qualitySnapshotShouldReject) {
+      throw new Error('simulated getStats failure')
+    }
+
+    return this.qualitySnapshotResult
+  }
+}
+
+function fakeQualitySnapshot(): QualitySnapshot {
+  return {
+    connection: {
+      timestampMs: 0,
+      connectionState: 'connected',
+      iceConnectionState: 'connected',
+      signalingState: 'stable',
+      selectedPath: null,
+    },
+    outboundVideo: null,
+    inboundVideo: null,
   }
 }
 

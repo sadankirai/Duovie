@@ -832,6 +832,39 @@ describe('WebRtcPeerController', () => {
     expect(fixture.remoteMediaStreamFactory).toHaveBeenCalledTimes(2)
     expect(fixture.remoteVideoChanges.at(-1)).toMatchObject({ state: 'receiving' })
   })
+
+  it('getQualitySnapshot returns null when there is no active peer', async () => {
+    const fixture = createFixture('Host')
+
+    const snapshot = await fixture.controller.getQualitySnapshot()
+
+    expect(snapshot).toBeNull()
+  })
+
+  it('getQualitySnapshot calls getStats on the active peer connection and returns a snapshot', async () => {
+    const fixture = createFixture('Host')
+    await fixture.controller.startHostNegotiation(true)
+    fixture.peer.statsReport = new Map([
+      ['outbound-1', { id: 'outbound-1', type: 'outbound-rtp', kind: 'video', bytesSent: 1_000 }],
+    ]) as unknown as RTCStatsReport
+
+    const snapshot = await fixture.controller.getQualitySnapshot()
+
+    expect(fixture.peer.getStatsCallCount).toBe(1)
+    expect(snapshot?.outboundVideo?.bytesSent).toBe(1_000)
+  })
+
+  it('a getStats failure resolves to null instead of throwing or affecting the peer', async () => {
+    const fixture = createFixture('Host')
+    await fixture.controller.startHostNegotiation(true)
+    fixture.peer.getStatsError = new Error('simulated getStats failure')
+
+    const snapshot = await fixture.controller.getQualitySnapshot()
+
+    expect(snapshot).toBeNull()
+    expect(fixture.recoveryReasons).toHaveLength(0)
+    expect(fixture.peer.closed).toBe(false)
+  })
 })
 
 function createFixture(
@@ -1001,6 +1034,18 @@ class FakePeerConnection {
   public addIceCandidateError: Error | null = null
   public closed = false
   public closeCount = 0
+  public getStatsCallCount = 0
+  public getStatsError: Error | null = null
+  public statsReport: RTCStatsReport = new Map() as unknown as RTCStatsReport
+
+  public async getStats(): Promise<RTCStatsReport> {
+    this.getStatsCallCount += 1
+    if (this.getStatsError !== null) {
+      throw this.getStatsError
+    }
+
+    return this.statsReport
+  }
 
   public addTransceiver(kind: string, init: RTCRtpTransceiverInit): RTCRtpTransceiver {
     const sender = new FakeRtpSender()

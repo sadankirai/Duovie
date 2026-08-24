@@ -18,6 +18,7 @@ import {
   parsePeerRoomRoute,
 } from './roomRoute'
 import { isWebRtcPeerConnectionSupported } from './WebRtcPeerController'
+import type { SelectedIcePath } from './qualitySnapshot'
 
 export interface RoomRuntimeController {
   start: () => Promise<void>
@@ -519,6 +520,77 @@ export function PeerDevelopmentHarness({
                 />
               )}
             </section>
+            <section>
+              <h2>Connection Quality</h2>
+              <dl>
+                <StateRow
+                  label="ICE path"
+                  value={formatIcePath(runtimeState.qualitySnapshot?.connection.selectedPath ?? null)}
+                />
+                <StateRow
+                  label="Transport"
+                  value={formatTransport(runtimeState.qualitySnapshot?.connection.selectedPath ?? null)}
+                />
+                <StateRow
+                  label="RTT"
+                  value={formatMilliseconds(
+                    runtimeState.qualitySnapshot?.connection.selectedPath?.currentRoundTripTimeMs ?? null,
+                  )}
+                />
+                {session.role === 'Host' && (
+                  <>
+                    <StateRow
+                      label="Send bitrate"
+                      value={formatBitrate(runtimeState.qualitySnapshot?.outboundVideo?.bitrateKbps ?? null)}
+                    />
+                    <StateRow
+                      label="FPS"
+                      value={formatFps(runtimeState.qualitySnapshot?.outboundVideo?.framesPerSecond ?? null)}
+                    />
+                    <StateRow
+                      label="Packet loss"
+                      value={formatPercent(runtimeState.qualitySnapshot?.outboundVideo?.packetLossPercent ?? null)}
+                    />
+                    <StateRow
+                      label="Quality limitation"
+                      value={runtimeState.qualitySnapshot?.outboundVideo?.qualityLimitationReason ?? '—'}
+                    />
+                    <StateRow
+                      label="Codec"
+                      value={runtimeState.qualitySnapshot?.outboundVideo?.codec ?? '—'}
+                    />
+                  </>
+                )}
+                {session.role === 'Guest' && (
+                  <>
+                    <StateRow
+                      label="Receive bitrate"
+                      value={formatBitrate(runtimeState.qualitySnapshot?.inboundVideo?.bitrateKbps ?? null)}
+                    />
+                    <StateRow
+                      label="FPS"
+                      value={formatFps(runtimeState.qualitySnapshot?.inboundVideo?.framesPerSecond ?? null)}
+                    />
+                    <StateRow
+                      label="Frames dropped"
+                      value={formatCount(runtimeState.qualitySnapshot?.inboundVideo?.framesDropped ?? null)}
+                    />
+                    <StateRow
+                      label="Packet loss"
+                      value={formatPercent(runtimeState.qualitySnapshot?.inboundVideo?.packetLossPercent ?? null)}
+                    />
+                    <StateRow
+                      label="Jitter"
+                      value={formatMilliseconds(runtimeState.qualitySnapshot?.inboundVideo?.jitterMs ?? null)}
+                    />
+                    <StateRow
+                      label="Codec"
+                      value={runtimeState.qualitySnapshot?.inboundVideo?.codec ?? '—'}
+                    />
+                  </>
+                )}
+              </dl>
+            </section>
           </div>
 
           <div className="peer-actions">
@@ -672,4 +744,41 @@ function runtimeStatusMessage(
     case 'unavailable':
       return 'Peer connection is currently unavailable.'
   }
+}
+
+function formatIcePath(selectedPath: SelectedIcePath | null): string {
+  if (selectedPath === null) {
+    return '—'
+  }
+
+  return `${selectedPath.localCandidateType ?? '—'} → ${selectedPath.remoteCandidateType ?? '—'}`
+}
+
+function formatTransport(selectedPath: SelectedIcePath | null): string {
+  const protocol = selectedPath?.relayProtocol ?? selectedPath?.transportProtocol ?? null
+  return protocol === null ? '—' : protocol.toUpperCase()
+}
+
+function formatBitrate(kbps: number | null): string {
+  if (kbps === null) {
+    return '—'
+  }
+
+  return kbps >= 1_000 ? `${(kbps / 1_000).toFixed(1)} Mbps` : `${Math.round(kbps)} Kbps`
+}
+
+function formatMilliseconds(ms: number | null): string {
+  return ms === null ? '—' : `${Math.round(ms)} ms`
+}
+
+function formatPercent(percent: number | null): string {
+  return percent === null ? '—' : `${percent.toFixed(1)}%`
+}
+
+function formatFps(fps: number | null): string {
+  return fps === null ? '—' : `${Math.round(fps)}`
+}
+
+function formatCount(value: number | null): string {
+  return value === null ? '—' : `${value}`
 }

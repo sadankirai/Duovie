@@ -39,6 +39,12 @@ test('Room URL, refresh continuity, and automatic Host-initiated P2P work end to
     await expect(guest.getByRole('button', { name: 'Share Screen' })).toHaveCount(0)
     await expect(guest.getByRole('button', { name: 'Start P2P' })).toHaveCount(0)
 
+    // The quality-telemetry diagnostics layer becomes available on its own conservative
+    // poll cadence once connected; only its availability is asserted here, never exact
+    // bitrate/RTT numbers, which would make the suite flaky and timing-dependent.
+    await expect(stateValue(host, 'Connection Quality', 'ICE path')).not.toHaveText('—')
+    await expect(stateValue(guest, 'Connection Quality', 'ICE path')).not.toHaveText('—')
+
     await host.getByText('Developer diagnostics / controls').click()
     await host.getByRole('button', { name: 'Restart Peer Runtime' }).click()
     await expectPeerConnected(host)

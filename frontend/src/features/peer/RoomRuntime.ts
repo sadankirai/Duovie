@@ -13,6 +13,7 @@ import {
 } from './contracts'
 import { fetchRoomIceServers } from './iceServersApi'
 import { resolveDevIceTransportPolicy } from './iceTransportPolicy'
+import type { QualitySnapshot } from './qualitySnapshot'
 import { RoomHubClient, type RoomHubHandlers } from './RoomHubClient'
 import {
   WebRtcPeerController,
@@ -41,6 +42,7 @@ export interface RoomRuntimeSnapshot {
   displayCaptureRequestPending: boolean
   remoteVideoState: RemoteVideoState
   hostScreenShareActive: boolean
+  qualitySnapshot: QualitySnapshot | null
 }
 
 export interface RoomRuntimeCallbacks {
@@ -71,6 +73,7 @@ export interface RoomPeerRuntime {
   stopScreenShare: () => Promise<void>
   resetPeer: (notifyRemote?: boolean) => void
   close: () => void
+  getQualitySnapshot: () => Promise<QualitySnapshot | null>
 }
 
 export type CancelScheduledWork = () => void
@@ -96,6 +99,8 @@ export interface RoomRuntimeDependencies {
   schedule: (callback: () => void, delayMilliseconds: number) => CancelScheduledWork
   retryDelaysMilliseconds: readonly number[]
   hubReconnectDelaysMilliseconds: readonly number[]
+  /** Conservative WebRTC quality-telemetry poll cadence; only active while a peer is connected. */
+  qualityPollIntervalMilliseconds: number
 }
 
 const closedPeerStatus: PeerConnectionStatus = {
@@ -116,6 +121,7 @@ export const initialRoomRuntimeSnapshot: RoomRuntimeSnapshot = {
   displayCaptureRequestPending: false,
   remoteVideoState: 'unavailable',
   hostScreenShareActive: false,
+  qualitySnapshot: null,
 }
 
 export const defaultRoomRuntimeDependencies: RoomRuntimeDependencies = {
@@ -134,6 +140,7 @@ export const defaultRoomRuntimeDependencies: RoomRuntimeDependencies = {
   },
   retryDelaysMilliseconds: [0, 300, 1_000],
   hubReconnectDelaysMilliseconds: [1_000, 3_000, 8_000],
+  qualityPollIntervalMilliseconds: 2_000,
 }
 
 export class RoomRuntime {
@@ -152,6 +159,7 @@ export class RoomRuntime {
   private cancelScheduledHubReconnect: CancelScheduledWork | null = null
   private hubRetryIndex = 0
   private iceServers: RTCIceServer[] = []
+  private cancelScheduledQualityPoll: CancelScheduledWork | null = null
   private snapshot: RoomRuntimeSnapshot = {
     ...initialRoomRuntimeSnapshot,
     presence: [],
@@ -634,6 +642,7 @@ export class RoomRuntime {
           this.retryIndex = 0
           this.recoveryEpisode = false
           this.snapshot.runtimeStatus = 'connected'
+          this.startQualityPolling(peer!, generation)
         }
         this.emit()
       },
@@ -690,6 +699,7 @@ export class RoomRuntime {
     this.snapshot.displayCaptureRequestPending = false
     this.snapshot.remoteVideoState = 'unavailable'
     this.snapshot.hostScreenShareActive = false
+    this.snapshot.qualitySnapshot = null
     this.callbacks.onRemoteVideoChanged(null, 'unavailable')
     this.refreshPeerProjection(peer)
     this.emit()
@@ -697,6 +707,7 @@ export class RoomRuntime {
   }
 
   private disposePeer(notifyRemote: boolean): void {
+    this.stopQualityPolling()
     const peer = this.peer
     this.peer = null
     ++this.peerGeneration
@@ -713,6 +724,7 @@ export class RoomRuntime {
     this.snapshot.displayCaptureRequestPending = false
     this.snapshot.remoteVideoState = 'unavailable'
     this.snapshot.hostScreenShareActive = false
+    this.snapshot.qualitySnapshot = null
     this.callbacks.onRemoteVideoChanged(null, 'unavailable')
     this.emit()
   }
@@ -803,6 +815,44 @@ export class RoomRuntime {
   private cancelHubReconnect(): void {
     this.cancelScheduledHubReconnect?.()
     this.cancelScheduledHubReconnect = null
+  }
+
+  /**
+   * Conservative WebRTC quality-telemetry polling: only while a peer exists in a
+   * meaningfully connected state. Self-reschedules after each tick (rather than a fixed
+   * interval) so a slow `getStats()` call can never overlap with the next poll. Guarded by
+   * the same peer identity/generation as every other async peer callback in this class, so
+   * a disposed/replaced peer's poll can never report stale telemetry.
+   */
+  private startQualityPolling(peer: RoomPeerRuntime, generation: number): void {
+    if (this.disposed || this.cancelScheduledQualityPoll !== null) {
+      return
+    }
+
+    this.cancelScheduledQualityPoll = this.dependencies.schedule(() => {
+      this.cancelScheduledQualityPoll = null
+      void this.runQualityPoll(peer, generation)
+    }, this.dependencies.qualityPollIntervalMilliseconds)
+  }
+
+  private async runQualityPoll(peer: RoomPeerRuntime, generation: number): Promise<void> {
+    if (this.disposed || this.peer !== peer || this.peerGeneration !== generation) {
+      return
+    }
+
+    const snapshot = await peer.getQualitySnapshot().catch(() => null)
+
+    if (this.disposed || this.peer !== peer || this.peerGeneration !== generation) {
+      return
+    }
+
+    this.update({ qualitySnapshot: snapshot })
+    this.startQualityPolling(peer, generation)
+  }
+
+  private stopQualityPolling(): void {
+    this.cancelScheduledQualityPoll?.()
+    this.cancelScheduledQualityPoll = null
   }
 
   private resetFailureEpisode(): void {

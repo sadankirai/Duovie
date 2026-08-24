@@ -7,6 +7,11 @@ import {
   type RoomWebRtcAnswer,
   type RoomWebRtcOffer,
 } from './contracts'
+import {
+  computeQualitySnapshot,
+  type PreviousQualitySample,
+  type QualitySnapshot,
+} from './qualitySnapshot'
 
 export interface PeerSignaling {
   isConnected: () => boolean
@@ -102,6 +107,7 @@ export class WebRtcPeerController {
   private stopScreenSharePromise: Promise<void> | null = null
   private remoteVideoOwner: RemoteVideoOwner | null = null
   private hostScreenShareActiveValue = false
+  private qualitySample: PreviousQualitySample | null = null
 
   public constructor(
     role: ParticipantRole,
@@ -466,6 +472,42 @@ export class WebRtcPeerController {
         this.stopScreenSharePromise = null
       }
     }
+  }
+
+  /**
+   * Best-effort WebRTC quality telemetry for the current peer, or `null` when there is no
+   * active peer. Never throws: a `getStats()` failure or a peer replaced/closed while the
+   * call was in flight both safely resolve to `null` rather than affecting peer health,
+   * renegotiation, or capture. Never exposes IP addresses, raw ICE candidates, TURN
+   * credentials, or raw SDP — see {@link computeQualitySnapshot}.
+   */
+  public async getQualitySnapshot(): Promise<QualitySnapshot | null> {
+    const activePeer = this.activePeer
+    if (activePeer === null) {
+      return null
+    }
+
+    let report: RTCStatsReport
+    try {
+      report = await activePeer.peerConnection.getStats()
+    } catch {
+      return null
+    }
+
+    if (!this.isCurrent(activePeer)) {
+      return null
+    }
+
+    const { snapshot, nextSample } = computeQualitySnapshot({
+      report,
+      connectionState: activePeer.peerConnection.connectionState,
+      iceConnectionState: activePeer.peerConnection.iceConnectionState,
+      signalingState: activePeer.peerConnection.signalingState,
+      nowMs: Date.now(),
+      previousSample: this.qualitySample,
+    })
+    this.qualitySample = nextSample
+    return snapshot
   }
 
   public resetPeer(notifyRemote = true): void {
