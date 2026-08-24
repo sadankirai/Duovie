@@ -251,6 +251,54 @@ describe('computeQualitySnapshot', () => {
     expect(snapshot.outboundVideo?.roundTripTimeMs).toBeNull()
     expect(snapshot.connection.selectedPath).toBeNull()
     expect(snapshot.inboundVideo).toBeNull()
+    expect(snapshot.outboundVideo?.captureWidth).toBeNull()
+    expect(snapshot.outboundVideo?.captureHeight).toBeNull()
+    expect(snapshot.outboundVideo?.encodedWidth).toBeNull()
+    expect(snapshot.outboundVideo?.encodedHeight).toBeNull()
+  })
+
+  it('exposes Host capture and encoded dimensions, and Guest received dimensions, when available', () => {
+    const { snapshot } = computeQualitySnapshot({
+      report: fakeReport([
+        outboundRtpStat({ bytesSent: 1_000, packetsSent: 10, frameWidth: 1280, frameHeight: 720 }),
+        inboundRtpStat({ bytesReceived: 1_000, packetsReceived: 10, frameWidth: 1280, frameHeight: 720 }),
+      ]),
+      connectionState: 'connected',
+      iceConnectionState: 'connected',
+      signalingState: 'stable',
+      nowMs: 0,
+      previousSample: null,
+      captureWidth: 1920,
+      captureHeight: 1080,
+    })
+
+    expect(snapshot.outboundVideo?.captureWidth).toBe(1920)
+    expect(snapshot.outboundVideo?.captureHeight).toBe(1080)
+    expect(snapshot.outboundVideo?.encodedWidth).toBe(1280)
+    expect(snapshot.outboundVideo?.encodedHeight).toBe(720)
+    expect(snapshot.inboundVideo?.frameWidth).toBe(1280)
+    expect(snapshot.inboundVideo?.frameHeight).toBe(720)
+  })
+
+  it('safely resolves missing dimension fields (older browsers) to null', () => {
+    const { snapshot } = computeQualitySnapshot({
+      report: fakeReport([
+        outboundRtpStat({ bytesSent: 1_000, packetsSent: 10 }),
+        inboundRtpStat({ bytesReceived: 1_000, packetsReceived: 10 }),
+      ]),
+      connectionState: 'connected',
+      iceConnectionState: 'connected',
+      signalingState: 'stable',
+      nowMs: 0,
+      previousSample: null,
+    })
+
+    expect(snapshot.outboundVideo?.captureWidth).toBeNull()
+    expect(snapshot.outboundVideo?.captureHeight).toBeNull()
+    expect(snapshot.outboundVideo?.encodedWidth).toBeNull()
+    expect(snapshot.outboundVideo?.encodedHeight).toBeNull()
+    expect(snapshot.inboundVideo?.frameWidth).toBeNull()
+    expect(snapshot.inboundVideo?.frameHeight).toBeNull()
   })
 
   it('does not crash on malformed/incomplete browser stats (wrong types, missing report)', () => {

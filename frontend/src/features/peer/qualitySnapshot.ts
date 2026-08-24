@@ -44,6 +44,12 @@ export interface OutboundVideoQuality {
   packetLossPercent: number | null
   roundTripTimeMs: number | null
   jitterMs: number | null
+  /** Native captured track dimensions, from `MediaStreamTrack.getSettings()`. */
+  captureWidth: number | null
+  captureHeight: number | null
+  /** Actual encoded/sent dimensions after any sender-side scaling. */
+  encodedWidth: number | null
+  encodedHeight: number | null
 }
 
 export interface InboundVideoQuality {
@@ -58,6 +64,9 @@ export interface InboundVideoQuality {
   framesDecoded: number | null
   framesDropped: number | null
   framesPerSecond: number | null
+  /** Actual received/decoded frame dimensions, when the browser reports them. */
+  frameWidth: number | null
+  frameHeight: number | null
 }
 
 export interface QualitySnapshot {
@@ -90,6 +99,9 @@ export interface ComputeQualitySnapshotInput {
   signalingState: RTCSignalingState
   nowMs: number
   previousSample: PreviousQualitySample | null
+  /** Host only: native captured track dimensions from `getSettings()`, if sharing. */
+  captureWidth?: number | null
+  captureHeight?: number | null
 }
 
 export interface ComputeQualitySnapshotResult {
@@ -128,6 +140,8 @@ export function computeQualitySnapshot(
     remoteInboundStat,
     input.previousSample?.outbound ?? null,
     deltaSeconds,
+    input.captureWidth ?? null,
+    input.captureHeight ?? null,
   )
   const inboundVideo = buildInboundVideo(
     stats,
@@ -179,6 +193,8 @@ function buildOutboundVideo(
   remoteInboundStat: StatRecord | null,
   previous: PreviousQualitySample['outbound'],
   deltaSeconds: number | null,
+  captureWidth: number | null,
+  captureHeight: number | null,
 ): OutboundVideoQuality | null {
   if (outboundStat === null) {
     return null
@@ -218,6 +234,10 @@ function buildOutboundVideo(
     ),
     roundTripTimeMs: toMilliseconds(numberOrNull(remoteInboundStat?.roundTripTime)),
     jitterMs: toMilliseconds(numberOrNull(remoteInboundStat?.jitter)),
+    captureWidth,
+    captureHeight,
+    encodedWidth: numberOrNull(outboundStat.frameWidth),
+    encodedHeight: numberOrNull(outboundStat.frameHeight),
   }
 }
 
@@ -258,6 +278,8 @@ function buildInboundVideo(
       previous?.framesDecoded ?? null,
       deltaSeconds,
     ),
+    frameWidth: numberOrNull(inboundStat.frameWidth),
+    frameHeight: numberOrNull(inboundStat.frameHeight),
   }
 }
 

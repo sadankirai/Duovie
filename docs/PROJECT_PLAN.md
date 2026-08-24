@@ -117,15 +117,27 @@ seam that production builds cannot enable. **Stage 6 is complete.**
 
 ## Stage 7 — Stability & Stream Quality
 
-**Status:** In progress. Task 7.1 WebRTC quality telemetry & diagnostics is complete: a
-feature-local, memory-only quality-telemetry pipeline (`RTCPeerConnection.getStats()` →
-normalized snapshot → `RoomRuntime` → development diagnostics UI) observes the current
-connection without changing it. This is observability only — no automatic bitrate,
-resolution, or FPS adaptation has been implemented yet. The real phone/cellular Guest test
-during Stage 6 acceptance showed the video reaching the Guest but appearing somewhat
-dropped/choppy; Task 7.1 exists to make that connection measurable so a follow-up real
-phone/cellular re-test with the new sender/receiver metrics visible can inform whether and
-how Stage 7.2 adaptive-quality work is justified, rather than guessing at the cause.
+**Status:** In progress. Task 7.1 WebRTC quality telemetry & diagnostics is complete and has
+been manually validated: a feature-local, memory-only quality-telemetry pipeline
+(`RTCPeerConnection.getStats()` → normalized snapshot → `RoomRuntime` → development
+diagnostics UI) observes the current connection without changing it. A real moving-video
+cross-network test (Mac Host on Wi-Fi, phone Guest on cellular, direct `srflx ↔ srflx` P2P)
+used that telemetry and found the connection itself healthy — 0% packet loss, low jitter,
+stable 30 FPS — with the strongest signal being `qualityLimitationReason: "bandwidth"` at
+roughly 1.4–1.6 Mbps while sending the native captured resolution with no explicit
+encoding policy; the user reported watchable but periodically blurry/stuttery moving
+content, not yet comparable to a smooth reference screen share.
+
+Task 7.2 adds a motion-oriented encoding **baseline** in response to that finding — not
+automatic adaptation: a fixed profile applied once per Host screen-share capture via
+`RTCRtpSender` encoding parameters only (never DOM/canvas resizing, never SDP munging,
+never renegotiation). Target is approximately 720p30 when the captured source is larger,
+`contentHint: "motion"` and `degradationPreference: "maintain-framerate"` where the browser
+supports them, and a 3.5 Mbps `maxBitrate` **ceiling** (congestion control remains
+authoritative — this is not a guaranteed/minimum bitrate). No automatic quality ladder,
+hysteresis, or bitrate-driven resolution switching exists yet; a follow-up real
+phone/cellular re-test with this baseline will determine whether and how Stage 7.3
+automatic adaptation is justified.
 
 **Objective:** prioritize reliable sessions.  
 **Scope:** WebRTC statistics, health model, quality monitoring, recovery, long-session testing, and adaptive-quality research/implementation when justified.  

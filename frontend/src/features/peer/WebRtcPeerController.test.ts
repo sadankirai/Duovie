@@ -478,6 +478,75 @@ describe('WebRtcPeerController', () => {
     expect(existingPeer.localDescriptions).toHaveLength(localDescriptionCount)
   })
 
+  it('applies the motion-optimized sender profile after replaceTrack, without renegotiation', async () => {
+    const fixture = createFixture('Host')
+    const videoTrack = fakeTrack('video', false, { width: 1920, height: 1080 })
+    fixture.displayMediaProvider.mockResolvedValueOnce(fakeStream(videoTrack))
+    await establishConnectedHost(fixture)
+    const existingPeer = fixture.peer
+    const existingSender = hostSender(existingPeer)
+    const offerCount = fixture.signaling.offers.length
+    const localDescriptionCount = existingPeer.localDescriptions.length
+    const createOfferCount = existingPeer.callOrder.filter(
+      (call) => call === 'createOffer',
+    ).length
+
+    await fixture.controller.startScreenShare()
+
+    expect(videoTrack.contentHint).toBe('motion')
+    expect(existingSender.setParametersCalls).toHaveLength(1)
+    const [parameters] = existingSender.setParametersCalls
+    expect(parameters.encodings?.[0]?.scaleResolutionDownBy).toBeCloseTo(1.5, 5)
+    expect(parameters.encodings?.[0]?.maxFramerate).toBe(30)
+    expect(parameters.encodings?.[0]?.maxBitrate).toBe(3_500_000)
+    expect(parameters.degradationPreference).toBe('maintain-framerate')
+
+    // The profile is applied purely through sender parameters; no renegotiation happens.
+    expect(
+      existingPeer.callOrder.filter((call) => call === 'createOffer'),
+    ).toHaveLength(createOfferCount)
+    expect(fixture.signaling.offers).toHaveLength(offerCount)
+    expect(existingPeer.localDescriptions).toHaveLength(localDescriptionCount)
+    expect(fixture.controller.screenShareState).toBe('active')
+  })
+
+  it('does not fail sharing when the sender rejects setParameters', async () => {
+    const fixture = createFixture('Host')
+    const videoTrack = fakeTrack('video', false, { width: 1920, height: 1080 })
+    fixture.displayMediaProvider.mockResolvedValueOnce(fakeStream(videoTrack))
+    await establishConnectedHost(fixture)
+    hostSender(fixture.peer).setParametersError = new Error('setParameters unsupported')
+
+    await fixture.controller.startScreenShare()
+
+    expect(fixture.controller.screenShareState).toBe('active')
+    expect(hostSender(fixture.peer).track).toBe(videoTrack)
+  })
+
+  it('recalculates the encoding profile from the new track on repeat sharing', async () => {
+    const fixture = createFixture('Host')
+    const firstTrack = fakeTrack('video', false, { width: 1920, height: 1080 })
+    fixture.displayMediaProvider.mockResolvedValueOnce(fakeStream(firstTrack))
+    await establishConnectedHost(fixture)
+
+    await fixture.controller.startScreenShare()
+    const sender = hostSender(fixture.peer)
+    expect(sender.setParametersCalls[0]?.encodings?.[0]?.scaleResolutionDownBy).toBeCloseTo(
+      1.5,
+      5,
+    )
+
+    await fixture.controller.stopScreenShare()
+    const secondTrack = fakeTrack('video', false, { width: 1280, height: 720 })
+    fixture.displayMediaProvider.mockResolvedValueOnce(fakeStream(secondTrack))
+
+    await fixture.controller.startScreenShare()
+
+    expect(sender.setParametersCalls).toHaveLength(2)
+    expect(sender.setParametersCalls[1]?.encodings?.[0]?.scaleResolutionDownBy).toBe(1)
+    expect(secondTrack.contentHint).toBe('motion')
+  })
+
   it('prevents concurrent capture requests and invalidates a pending request on stop', async () => {
     const fixture = createFixture('Host')
     const permission = deferred<MediaStream>()
@@ -1144,6 +1213,9 @@ class FakeRtpSender {
   public track: MediaStreamTrack | null = null
   public readonly replaceTrackCalls: Array<MediaStreamTrack | null> = []
   public replaceTrackError: Error | null = null
+  public readonly setParametersCalls: RTCRtpSendParameters[] = []
+  public setParametersError: Error | null = null
+  private parameters: RTCRtpSendParameters = { encodings: [{}] } as unknown as RTCRtpSendParameters
 
   public async replaceTrack(track: MediaStreamTrack | null): Promise<void> {
     this.replaceTrackCalls.push(track)
@@ -1152,6 +1224,18 @@ class FakeRtpSender {
     }
 
     this.track = track
+  }
+
+  public getParameters(): RTCRtpSendParameters {
+    return this.parameters
+  }
+
+  public async setParameters(parameters: RTCRtpSendParameters): Promise<void> {
+    this.setParametersCalls.push(parameters)
+    this.parameters = parameters
+    if (this.setParametersError !== null) {
+      throw this.setParametersError
+    }
   }
 }
 
@@ -1175,10 +1259,16 @@ class FakeMediaStreamTrack {
   public onmute: MediaStreamTrack['onmute'] = null
   public onunmute: MediaStreamTrack['onunmute'] = null
   public stopCount = 0
+  public contentHint = ''
+  public settings: MediaTrackSettings = {}
 
   public constructor(kind: 'video' | 'audio' = 'video', muted = false) {
     this.kind = kind
     this.muted = muted
+  }
+
+  public getSettings(): MediaTrackSettings {
+    return this.settings
   }
 
   public stop(): void {
@@ -1231,8 +1321,11 @@ function transceiverStates(peer: FakePeerConnection) {
 function fakeTrack(
   kind: 'video' | 'audio' = 'video',
   muted = false,
+  settings: MediaTrackSettings = {},
 ): FakeMediaStreamTrack {
-  return new FakeMediaStreamTrack(kind, muted)
+  const track = new FakeMediaStreamTrack(kind, muted)
+  track.settings = settings
+  return track
 }
 
 function fakeStream(...tracks: FakeMediaStreamTrack[]): MediaStream {

@@ -540,6 +540,20 @@ export function PeerDevelopmentHarness({
                 {session.role === 'Host' && (
                   <>
                     <StateRow
+                      label="Capture"
+                      value={formatResolution(
+                        runtimeState.qualitySnapshot?.outboundVideo?.captureWidth ?? null,
+                        runtimeState.qualitySnapshot?.outboundVideo?.captureHeight ?? null,
+                      )}
+                    />
+                    <StateRow
+                      label="Encoded"
+                      value={formatResolution(
+                        runtimeState.qualitySnapshot?.outboundVideo?.encodedWidth ?? null,
+                        runtimeState.qualitySnapshot?.outboundVideo?.encodedHeight ?? null,
+                      )}
+                    />
+                    <StateRow
                       label="Send bitrate"
                       value={formatBitrate(runtimeState.qualitySnapshot?.outboundVideo?.bitrateKbps ?? null)}
                     />
@@ -563,6 +577,13 @@ export function PeerDevelopmentHarness({
                 )}
                 {session.role === 'Guest' && (
                   <>
+                    <StateRow
+                      label="Received resolution"
+                      value={formatResolution(
+                        runtimeState.qualitySnapshot?.inboundVideo?.frameWidth ?? null,
+                        runtimeState.qualitySnapshot?.inboundVideo?.frameHeight ?? null,
+                      )}
+                    />
                     <StateRow
                       label="Receive bitrate"
                       value={formatBitrate(runtimeState.qualitySnapshot?.inboundVideo?.bitrateKbps ?? null)}
@@ -781,4 +802,8 @@ function formatFps(fps: number | null): string {
 
 function formatCount(value: number | null): string {
   return value === null ? '—' : `${value}`
+}
+
+function formatResolution(width: number | null, height: number | null): string {
+  return width === null || height === null ? '—' : `${width} × ${height}`
 }

@@ -12,6 +12,7 @@ import {
   type PreviousQualitySample,
   type QualitySnapshot,
 } from './qualitySnapshot'
+import { applyMotionOptimizedSenderProfile } from './screenShareEncoding'
 
 export interface PeerSignaling {
   isConnected: () => boolean
@@ -427,6 +428,11 @@ export class WebRtcPeerController {
       throw new WebRtcPeerError(screenCaptureFailureMessage)
     }
 
+    // Best-effort motion-oriented encoding profile (content hint, resolution/framerate/
+    // bitrate/degradation preference on the sender only). Never renegotiates and never
+    // fails the share; see applyMotionOptimizedSenderProfile for failure handling.
+    await applyMotionOptimizedSenderProfile(sender, videoTrack)
+
     if (
       !this.isCaptureRequestCurrent(activePeer, sender, requestId) ||
       this.localDisplayShare !== share ||
@@ -498,6 +504,11 @@ export class WebRtcPeerController {
       return null
     }
 
+    const captureSettings =
+      typeof this.localDisplayShare?.track.getSettings === 'function'
+        ? this.localDisplayShare.track.getSettings()
+        : null
+
     const { snapshot, nextSample } = computeQualitySnapshot({
       report,
       connectionState: activePeer.peerConnection.connectionState,
@@ -505,6 +516,8 @@ export class WebRtcPeerController {
       signalingState: activePeer.peerConnection.signalingState,
       nowMs: Date.now(),
       previousSample: this.qualitySample,
+      captureWidth: captureSettings?.width ?? null,
+      captureHeight: captureSettings?.height ?? null,
     })
     this.qualitySample = nextSample
     return snapshot
