@@ -1,0 +1,59 @@
+.page{background:var(--color-bg);color:var(--color-text);min-height:100vh;font-family:var(--font-body)}
+.main{max-width:1600px;margin:0 auto;padding:0 clamp(16px,4vw,56px) 90px;display:flex;flex-direction:column;gap:56px;box-sizing:border-box}
+
+.hero{position:relative;border-radius:16px;overflow:hidden;background:#0d0b0a;margin-top:32px}
+.heroImgWrap{position:relative;height:clamp(230px,30vw,340px)}
+.heroBg{position:absolute;inset:0;background-size:cover;background-position:center;background-repeat:no-repeat}
+.heroOverlay{position:absolute;inset:0;background:linear-gradient(180deg,rgba(10,9,8,0.88) 0%,rgba(10,9,8,0.5) 20%,rgba(10,9,8,0.08) 32%,transparent 46%)}
+.heroTextWrap{position:absolute;top:0;left:0;padding:clamp(22px,4vw,40px)}
+.kicker{font-size:12px;font-weight:800;letter-spacing:0.12em;color:var(--color-accent-400);font-family:var(--font-heading)}
+.heroTextWrap h1{font-size:clamp(26px,3.6vw,40px);line-height:1.12;margin:8px 0 0;font-weight:800;color:#fff}
+.heroBody{padding:clamp(20px,4vw,32px) clamp(20px,4vw,40px) clamp(22px,4vw,32px);display:flex;flex-direction:column;gap:16px}
+.heroDesc{color:color-mix(in srgb,var(--color-text) 55%,transparent);font-size:15px;line-height:1.6;margin:0;max-width:520px}
+.controlsRow{display:flex;flex-wrap:wrap;align-items:center;gap:12px}
+.searchWrap{position:relative;flex:1;min-width:200px;max-width:360px}
+.searchIcon{position:absolute;left:14px;top:50%;transform:translateY(-50%);pointer-events:none;color:color-mix(in srgb,var(--color-text) 55%,transparent)}
+.searchInput{width:100%;box-sizing:border-box;background:var(--color-surface);border:1px solid var(--color-divider);border-radius:10px;padding:10px 14px 10px 38px;color:var(--color-text);font-size:13px;font-family:var(--font-body)}
+.filters{display:flex;gap:8px;flex-wrap:wrap}
+.filterPill{display:inline-flex;align-items:center;padding:8px 15px;border-radius:20px;font-size:12px;font-weight:700;font-family:var(--font-heading);cursor:pointer;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.18);color:rgba(255,255,255,0.85);transition:background .15s ease,border-color .15s ease,color .15s ease}
+.filterActive{background:var(--color-accent);border:1px solid var(--color-accent);color:#fff}
+
+.sectionHead{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:18px;gap:12px;flex-wrap:wrap}
+.sectionHeadLeft{display:flex;align-items:center;gap:10px}
+.sectionBar{width:3px;height:18px;background:var(--color-accent);border-radius:2px;flex:none}
+.sectionHead h3{font-size:18px;margin:0}
+.muted{color:color-mix(in srgb,var(--color-text) 55%,transparent);font-size:13px;margin:2px 0 0}
+.seeAll{font-size:13px;font-weight:700;font-family:var(--font-heading);display:inline-flex;align-items:center;gap:6px}
+
+.roomsWrap{position:relative}
+.roomsScroll{display:flex;gap:16px;overflow-x:auto;scroll-snap-type:x mandatory;padding:4px 4px 14px}
+.roomCard{position:relative;flex:0 0 clamp(200px,22vw,240px);scroll-snap-align:start;border-radius:16px;overflow:hidden;border:1px solid var(--color-divider);display:flex;flex-direction:column}
+.roomTop{position:relative;padding:14px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.openTag{display:inline-flex;align-items:center;gap:5px;background:color-mix(in srgb,#000 25%,transparent);border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;font-family:var(--font-heading)}
+.openDot{width:6px;height:6px;border-radius:50%;background:#3ecf6e}
+.occupancyTag{display:inline-flex;align-items:center;gap:5px;background:color-mix(in srgb,#000 25%,transparent);border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;font-family:var(--font-heading);color:color-mix(in srgb,var(--color-text) 55%,transparent)}
+.hostRow{position:relative;flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:8px 14px}
+.hostAvatars{display:flex;align-items:center}
+.hostName{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.roomBottom{position:relative;padding:0 14px 14px;display:flex;flex-direction:column;gap:10px}
+.roomName{font-size:17px;font-weight:800}
+.tagRow{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.actLabel{font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;background:var(--color-accent);color:#fff}
+.catLabel{color:color-mix(in srgb,var(--color-text) 55%,transparent);font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;border:1px solid var(--color-divider)}
+.fullTag{color:color-mix(in srgb,var(--color-text) 55%,transparent);text-align:center;font-size:12px;padding:9px 0;border-radius:8px;border:1px solid var(--color-divider)}
+.joinBtn{justify-content:center;font-size:13px;padding:10px 0;border-radius:8px}
+.carouselArrow{position:absolute;top:50%;transform:translateY(-50%);width:42px;height:42px;border-radius:50%;background:rgba(20,18,18,0.75);border:1px solid rgba(255,255,255,0.16);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;color:#fff;cursor:pointer;z-index:2;transition:background .15s ease}
+.carouselArrow:hover{background:rgba(30,27,26,0.9)}
+.arrowLeft{left:-14px}
+.arrowRight{right:-14px}
+
+.peopleGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:2px 40px}
+.personRow{display:flex;align-items:center;gap:14px;padding:13px 4px;border-bottom:1px solid var(--color-divider)}
+.personRow:hover{background:color-mix(in srgb,#fff 4%,transparent)}
+.personInfo{min-width:0;flex:1}
+.personName{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.personSub{color:color-mix(in srgb,var(--color-text) 55%,transparent);font-size:12px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.requestedTag{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700;padding:7px 14px;border-radius:8px;background:color-mix(in srgb,#3ecf6e 18%,transparent);color:#3ecf6e;flex:none}
+.followBtn{font-size:12px;padding:8px 16px;border-radius:8px;flex:none}
+
+.quote{color:color-mix(in srgb,var(--color-text) 55%,transparent);text-align:center;font-size:14px;font-style:italic;margin:0}

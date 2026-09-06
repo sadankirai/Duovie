@@ -1,0 +1,2 @@
+.input{width:100%;background:var(--color-bg);border:1px solid var(--color-divider);border-radius:8px;padding:12px 14px;color:var(--color-text);font-size:14px;font-family:var(--font-body)}
+.input:focus{outline:2px solid var(--color-accent);outline-offset:1px}

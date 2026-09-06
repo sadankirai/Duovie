@@ -1,0 +1,41 @@
+.page{background:var(--color-bg);color:var(--color-text);height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.body{display:flex;flex:1;min-height:0}
+.muted{color:var(--color-muted);font-size:12px}
+.sidebar{width:340px;flex:none;border-right:1px solid var(--color-divider);display:flex;flex-direction:column}
+.sidebarTitle{padding:20px 20px 14px;font-size:22px}
+.convoList{flex:1;overflow-y:auto}
+.convoRow{display:flex;align-items:center;gap:12px;padding:14px 20px;cursor:pointer}
+.convoRowActive{background:var(--color-surface)}
+.convoText{min-width:0;flex:1}
+.convoTop{display:flex;align-items:baseline;gap:6px;justify-content:space-between}
+.convoName{font-size:14px;font-weight:700;display:inline-flex;align-items:center;gap:4px}
+.streak{display:inline-flex;align-items:center;gap:2px;font-size:11px;font-weight:700;color:var(--color-accent-400)}
+.streak img{width:13px;height:13px;object-fit:contain}
+.convoPreview{font-size:13px;margin-top:2px;color:var(--color-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px}
+.unreadDot{width:9px;height:9px;border-radius:50%;background:var(--color-accent);flex:none}
+.chatCol{flex:1;display:flex;flex-direction:column;min-width:0}
+.chatHeader{display:flex;align-items:center;gap:12px;padding:16px 24px;border-bottom:1px solid var(--color-divider)}
+.backBtn{display:none;background:none;border:none;color:var(--color-text);font-size:18px;cursor:pointer}
+.scrollArea{flex:1;overflow-y:auto;padding:24px;display:flex;flex-direction:column;gap:10px}
+.rowMine{display:flex;flex-direction:column;align-items:flex-end}
+.rowTheirs{display:flex;flex-direction:column;align-items:flex-start}
+.bubbleMine,.bubbleTheirs{max-width:60%;padding:10px 16px;border-radius:18px;font-size:14px;line-height:1.4}
+.bubbleMine{background:var(--color-accent);color:#fff}
+.bubbleTheirs{background:var(--color-surface);color:var(--color-text)}
+.receipt{font-size:11px;margin-top:3px;margin-right:2px;color:var(--color-muted)}
+.inviteCard{width:220px;display:flex;flex-direction:column;gap:12px;padding:14px;border-radius:14px;background:var(--color-surface);border:1px solid var(--color-divider)}
+.inviteHead{display:flex;align-items:center;gap:10px}
+.inviteIcon{width:34px;height:34px;border-radius:50%;background:color-mix(in srgb,var(--color-accent) 20%,transparent);display:flex;align-items:center;justify-content:center;flex:none}
+.inviteText{font-size:13px;font-weight:700;color:var(--color-text)}
+.inviteBtn{display:flex;justify-content:center;border-radius:8px;padding:8px;font-size:13px}
+.composer{display:flex;align-items:center;gap:10px;padding:16px 24px;border-top:1px solid var(--color-divider)}
+.attachBtn{width:42px;height:42px;flex:none;border-radius:50%;background:var(--color-surface);border:1px solid var(--color-divider);display:flex;align-items:center;justify-content:center;color:var(--color-text);cursor:pointer}
+.composerInput{flex:1;box-sizing:border-box;background:var(--color-surface);border:1px solid var(--color-divider);border-radius:24px;padding:12px 18px;color:var(--color-text);font-size:14px;font-family:var(--font-body)}
+.sendBtn{width:42px;height:42px;flex:none;border-radius:50%;background:var(--color-accent);border:none;color:#fff;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.botIcon{flex:none}
+
+@media (max-width: 860px){
+  .sidebar{width:100%}
+  .hiddenMobile{display:none}
+  .backBtn{display:flex}
+}

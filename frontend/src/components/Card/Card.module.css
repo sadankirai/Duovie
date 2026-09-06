@@ -1,0 +1,2 @@
+.card{background:var(--color-surface);border:1px solid var(--color-divider);border-radius:var(--radius-card);padding:20px;display:flex;flex-direction:column;gap:14px}
+.accent{border-left:4px solid var(--color-accent);padding-left:24px}

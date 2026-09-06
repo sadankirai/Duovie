@@ -1,0 +1,11 @@
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border-radius:24px;padding:12px 24px;font-size:14px;font-weight:700;font-family:var(--font-heading);cursor:pointer;border:none;white-space:nowrap}
+.primary{background:var(--color-accent);color:#fff}
+.primary:hover{background:var(--color-accent-600)}
+.light{background:#fff;color:#111}
+.light:hover{filter:brightness(0.95)}
+.outline{background:transparent;color:var(--color-text);border:1px solid var(--color-divider)}
+.outline:hover{background:color-mix(in srgb,#fff 8%,transparent)}
+.ghost{background:color-mix(in srgb,#fff 10%,transparent);color:var(--color-text)}
+.ghost:hover{background:color-mix(in srgb,#fff 18%,transparent)}
+.full{width:100%}
+.btn:disabled{opacity:0.5;cursor:not-allowed}

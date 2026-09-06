@@ -1,0 +1,36 @@
+.page{background:var(--color-bg);color:var(--color-text);min-height:100vh;font-family:var(--font-body)}
+.main{max-width:1600px;margin:0 auto;padding:clamp(20px,4vw,48px) clamp(16px,4vw,56px) 80px;display:flex;flex-direction:column;gap:40px;box-sizing:border-box}
+.main h1{font-size:32px;margin:0 0 6px}
+.muted{color:color-mix(in srgb,var(--color-text) 55%,transparent);font-size:15px;margin:0}
+
+.searchWrap{max-width:480px;position:relative}
+.searchInputWrap{position:relative}
+.searchIcon{position:absolute;left:16px;top:50%;transform:translateY(-50%);color:color-mix(in srgb,var(--color-text) 55%,transparent)}
+.searchInput{width:100%;box-sizing:border-box;background:var(--color-surface);border:1px solid var(--color-divider);border-radius:10px;padding:13px 16px 13px 42px;color:var(--color-text);font-size:14px;font-family:var(--font-body)}
+.searchResults{position:absolute;top:calc(100% + 8px);left:0;right:0;background:#1c1a19;border:1px solid var(--color-divider);border-radius:10px;box-shadow:0 16px 40px rgba(0,0,0,0.4);z-index:5;overflow:hidden}
+.searchRow{display:flex;align-items:center;gap:12px;padding:10px 14px}
+.searchName{flex:1;font-size:14px;font-weight:600}
+.searchMuted{color:color-mix(in srgb,var(--color-text) 55%,transparent);font-size:12px}
+.searchFollow{font-size:12px;font-weight:700;color:var(--color-accent-400);font-family:var(--font-heading)}
+.codeRow{display:flex;align-items:center;gap:14px;margin-top:10px;font-size:14px;color:color-mix(in srgb,var(--color-text) 55%,transparent)}
+.codeLink{font-weight:600;color:var(--color-text)}
+
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:20px}
+.card{background:var(--color-surface);border:1px solid var(--color-divider);border-radius:14px;padding:20px;display:flex;flex-direction:column;gap:14px}
+.cardHead{display:flex;align-items:center;gap:12px}
+.name{font-size:16px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cardMuted{color:color-mix(in srgb,var(--color-text) 55%,transparent);font-size:13px}
+.cardActions{display:flex;gap:8px}
+.invitedTag{flex:1;display:flex;justify-content:center;align-items:center;gap:6px;font-size:13px;padding:9px;border-radius:8px;background:color-mix(in srgb,#3ecf6e 18%,transparent);color:#3ecf6e;font-family:var(--font-heading);font-weight:700}
+.inviteBtn{flex:1;justify-content:center;font-size:13px;padding:9px;border-radius:8px}
+.msgBtn{width:38px;height:38px;flex:none;display:flex;align-items:center;justify-content:center;border:1px solid var(--color-divider);border-radius:8px;color:var(--color-text)}
+
+.hr{height:1px;background:var(--color-divider);margin-bottom:32px}
+.main h3{font-size:18px;margin:0 0 4px}
+.mutualDesc{color:color-mix(in srgb,var(--color-text) 55%,transparent);font-size:13px;margin:0 0 20px}
+.mutualList{display:flex;flex-direction:column;gap:2px}
+.mutualRow{display:flex;align-items:center;gap:14px;padding:12px 4px}
+.mutualInfo{flex:1;min-width:0}
+.mutualName{font-size:14px;font-weight:700}
+.mutualSub{color:color-mix(in srgb,var(--color-text) 55%,transparent);font-size:12px}
+.pillOutline{color:color-mix(in srgb,var(--color-text) 55%,transparent);font-size:12px;border:1px solid var(--color-divider);border-radius:20px;padding:6px 14px}
